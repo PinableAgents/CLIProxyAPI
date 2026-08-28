@@ -76,6 +76,9 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
 	fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	if versionRequested(os.Args[1:]) {
+		return
+	}
 
 	// Command-line flags to control the application's behavior.
 	var codexLogin bool
@@ -774,6 +777,15 @@ func main() {
 			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, hostOptions, serverOptions...)
 		}
 	}
+}
+
+func versionRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--version" || arg == "-version" {
+			return true
+		}
+	}
+	return false
 }
 
 // modelCatalogUpdaterPlan decides which remote model catalogs should refresh.

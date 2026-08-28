@@ -6,6 +6,19 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
+func TestVersionRequested(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"-version"}, {"--version", "--config", "ignored.yaml"}} {
+		if !versionRequested(args) {
+			t.Fatalf("versionRequested(%q) = false", args)
+		}
+	}
+	for _, args := range [][]string{nil, {"--config", "config.yaml"}, {"--versioned"}} {
+		if versionRequested(args) {
+			t.Fatalf("versionRequested(%q) = true", args)
+		}
+	}
+}
+
 func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 	cfgWithExampleKey := &config.Config{
 		SDKConfig: config.SDKConfig{

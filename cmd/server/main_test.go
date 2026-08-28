@@ -19,14 +19,15 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 	}
 
 	tests := []struct {
-		name               string
-		cfg                *config.Config
-		commandMode        bool
-		tuiMode            bool
-		standalone         bool
-		cloudConfigMissing bool
-		homeMode           bool
-		want               bool
+		name                string
+		cfg                 *config.Config
+		commandMode         bool
+		tuiMode             bool
+		standalone          bool
+		cloudConfigMissing  bool
+		homeMode            bool
+		ephemeralConfigured bool
+		want                bool
 	}{
 		{
 			name: "normal server with example key",
@@ -67,6 +68,12 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 			want:               false,
 		},
 		{
+			name:                "ephemeral key keeps server available with example config key",
+			cfg:                 cfgWithExampleKey,
+			ephemeralConfigured: true,
+			want:                false,
+		},
+		{
 			name: "normal server with real key",
 			cfg:  cfgWithRealKey,
 			want: false,
@@ -80,7 +87,7 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldEnableExampleAPIKeySafeMode(tt.cfg, tt.commandMode, tt.tuiMode, tt.standalone, tt.cloudConfigMissing, tt.homeMode)
+			got := shouldEnableExampleAPIKeySafeMode(tt.cfg, tt.commandMode, tt.tuiMode, tt.standalone, tt.cloudConfigMissing, tt.homeMode, tt.ephemeralConfigured)
 			if got != tt.want {
 				t.Fatalf("shouldEnableExampleAPIKeySafeMode() = %t, want %t", got, tt.want)
 			}

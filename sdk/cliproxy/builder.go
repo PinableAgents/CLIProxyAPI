@@ -59,6 +59,8 @@ type Builder struct {
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
+
+	ephemeralAPIKey string
 }
 
 // Hooks allows callers to plug into service lifecycle stages.
@@ -176,6 +178,12 @@ func (b *Builder) WithLocalManagementPassword(password string) *Builder {
 	return b
 }
 
+// WithEphemeralAPIKey registers a runtime-only API key for public API requests.
+func (b *Builder) WithEphemeralAPIKey(key string) *Builder {
+	b.ephemeralAPIKey = key
+	return b
+}
+
 // WithPostAuthHook registers a hook to be called after an Auth record is created
 // but before it is persisted to storage.
 func (b *Builder) WithPostAuthHook(hook coreauth.PostAuthHook) *Builder {
@@ -236,7 +244,12 @@ func (b *Builder) Build() (*Service, error) {
 		pluginHost.ApplyConfig(context.Background(), b.cfg)
 		pluginHost.RegisterFrontendAuthProviders()
 	}
-	accessManager.SetProviders(sdkaccess.RegisteredProviders())
+	accessProviders := sdkaccess.RegisteredProviders()
+	runtimeAccessProvider := configaccess.NewRuntimeAPIKeyProvider("cliproxyapi-ephemeral", b.ephemeralAPIKey)
+	if runtimeAccessProvider != nil {
+		accessProviders = append(accessProviders, runtimeAccessProvider)
+	}
+	accessManager.SetProviders(accessProviders)
 
 	coreManager := b.coreManager
 	cooldownStateStore := b.cooldownStateStore
@@ -263,24 +276,32 @@ func (b *Builder) Build() (*Service, error) {
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
 	}
+	var runtimeAccessProviders []sdkaccess.Provider
+	if runtimeAccessProvider != nil {
+		runtimeAccessProviders = []sdkaccess.Provider{runtimeAccessProvider}
+	}
 
 	service := &Service{
-		cfg:                 b.cfg,
-		configPath:          b.configPath,
-		tokenProvider:       tokenProvider,
-		apiKeyProvider:      apiKeyProvider,
-		watcherFactory:      watcherFactory,
-		hooks:               b.hooks,
-		authManager:         authManager,
-		accessManager:       accessManager,
-		coreManager:         coreManager,
-		cooldownStateStore:  cooldownStateStore,
-		pluginHost:          pluginHost,
-		appliedRoutingState: appliedRoutingState,
-		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
+		cfg:                    b.cfg,
+		configPath:             b.configPath,
+		tokenProvider:          tokenProvider,
+		apiKeyProvider:         apiKeyProvider,
+		watcherFactory:         watcherFactory,
+		hooks:                  b.hooks,
+		authManager:            authManager,
+		accessManager:          accessManager,
+		runtimeAccessProviders: runtimeAccessProviders,
+		coreManager:            coreManager,
+		cooldownStateStore:     cooldownStateStore,
+		pluginHost:             pluginHost,
+		appliedRoutingState:    appliedRoutingState,
+		serverOptions:          append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
+	}
+	if runtimeAccessProvider != nil {
+		service.serverOptions = append(service.serverOptions, api.WithRuntimeAccessProviders(runtimeAccessProvider))
 	}
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),

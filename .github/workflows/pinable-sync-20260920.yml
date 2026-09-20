@@ -3,7 +3,9 @@ name: Pinable sync 20260920
 on:
   push:
     branches: [sync/upstream-20260920]
-    paths: [.github/pinable-sync-20260920.patch]
+    paths:
+      - .github/pinable-sync-20260920.patch
+      - .github/workflows/pinable-sync-20260920.yml
 
 permissions:
   contents: write
@@ -39,8 +41,10 @@ jobs:
             diff -u "$RUNNER_TEMP/expected-conflicts.txt" "$RUNNER_TEMP/actual-conflicts.txt"
           fi
           git checkout "$FORK_SHA" -- cmd/server/main.go cmd/server/main_test.go sdk/cliproxy/builder.go
-          git apply --check --index .github/pinable-sync-20260920.patch
-          git apply --index .github/pinable-sync-20260920.patch
+          sed 's/^ diff --git /diff --git /; s/^+\tfunc TestArgvEnablesBoolFlag(/+func TestArgvEnablesBoolFlag(/' .github/pinable-sync-20260920.patch > "$RUNNER_TEMP/resolution.patch"
+          printf 'a1a5926946d76da7ae46a5e1b5640b60fc7c1b9af54e51145d385b8317e678f2  %s\n' "$RUNNER_TEMP/resolution.patch" | sha256sum --check
+          git apply --check --index "$RUNNER_TEMP/resolution.patch"
+          git apply --index "$RUNNER_TEMP/resolution.patch"
           test -z "$(git ls-files -u)"
           git diff --cached --check
           git diff --cached --stat

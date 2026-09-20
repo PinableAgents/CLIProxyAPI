@@ -71,6 +71,10 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
+	if printHostVersion(os.Args[1:], os.Stdout) {
+		return
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "discover" {
 		discoverFlags := flag.NewFlagSet("discover", flag.ExitOnError)
 		timeoutSec := discoverFlags.Int("timeout", 3, "Discovery timeout in seconds")
@@ -129,6 +133,7 @@ func main() {
 	var tuiMode bool
 	var standalone bool
 	var localModel bool
+	var parentPID int
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
@@ -156,6 +161,7 @@ func main() {
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded models.json and codex_client_models.json only, skip remote model catalog fetching")
+	flag.IntVar(&parentPID, "parent-pid", 0, "Exit when the specified parent process is no longer running")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -194,6 +200,10 @@ func main() {
 
 	// Parse the command-line flags.
 	flag.Parse()
+	if parentPID < 0 {
+		log.Errorf("parent pid must be positive")
+		return
+	}
 
 	if discoverGateways || discoverJSON {
 		cfgInclude, cfgExclude := cmd.LoadDiscoveryScanFilters(configPath)
@@ -653,7 +663,9 @@ func main() {
 	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin || devinLogin || metaLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
+	hostOptions := hostOptionsFromEnv(parentPID)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
+	exampleAPIKeySafeMode = applyHostSafeMode(exampleAPIKeySafeMode, hostOptions)
 	serverOptions := []api.ServerOption(nil)
 	if exampleAPIKeySafeMode {
 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)
@@ -773,7 +785,7 @@ func main() {
 					password = localMgmtPassword
 				}
 
-				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+				cancel, done := cmd.StartServiceBackgroundWithPluginHost(cfg, configFilePath, password, pluginHost, hostOptions, serverOptions...)
 
 				client := tui.NewClient(cfg.Port, password)
 				ready := false
@@ -818,7 +830,7 @@ func main() {
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
 			startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
-			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, hostOptions, serverOptions...)
 		}
 	}
 }

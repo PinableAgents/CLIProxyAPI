@@ -3,9 +3,7 @@ name: Pinable sync 20260920
 on:
   push:
     branches: [sync/upstream-20260920]
-    paths:
-      - .github/pinable-sync-20260920.patch
-      - .github/workflows/pinable-sync-20260920.yml
+    paths: [.github/workflows/pinable-sync-20260920.yml]
 
 permissions:
   contents: write
@@ -15,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  integrate:
+  finalize:
     if: github.repository == 'PinableAgents/CLIProxyAPI'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -23,51 +21,86 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Merge the pinned fork revision and apply the reviewed resolution
-        shell: bash
-        env:
-          FORK_SHA: 491e5413d084f74614f10834d63b76d288fb3e56
-          UPSTREAM_SHA: 61fdfc341b96178a8dcb53f2efc46cbc341d267c
-        run: |
-          set -euo pipefail
-          git config user.name 'Pinable sync'
-          git config user.email 'noreply@pinable.cc'
-          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
-          test "$(git rev-parse origin/main)" = "$FORK_SHA"
-          git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD
-          if ! git merge --no-commit --no-ff "$FORK_SHA"; then
-            printf '%s\n' cmd/server/main.go cmd/server/main_test.go sdk/cliproxy/builder.go > "$RUNNER_TEMP/expected-conflicts.txt"
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/actual-conflicts.txt"
-            diff -u "$RUNNER_TEMP/expected-conflicts.txt" "$RUNNER_TEMP/actual-conflicts.txt"
-          fi
-          git checkout "$FORK_SHA" -- cmd/server/main.go cmd/server/main_test.go sdk/cliproxy/builder.go
-          sed 's/^ diff --git /diff --git /; s/^+\tfunc TestArgvEnablesBoolFlag(/+func TestArgvEnablesBoolFlag(/' .github/pinable-sync-20260920.patch > "$RUNNER_TEMP/resolution.patch"
-          printf 'a1a5926946d76da7ae46a5e1b5640b60fc7c1b9af54e51145d385b8317e678f2  %s\n' "$RUNNER_TEMP/resolution.patch" | sha256sum --check
-          git apply --check --index "$RUNNER_TEMP/resolution.patch"
-          git apply --index "$RUNNER_TEMP/resolution.patch"
-          test -z "$(git ls-files -u)"
-          git diff --cached --check
-          git diff --cached --stat
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      - name: Remove mock-clock ordering races without changing executor behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor bb90200d530696d28fa3cacb196fa799387c0a75 HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('internal/runtime/executor/codex_stream_bootstrap_buffering_test.go')
+          s = p.read_text()
+          anchor = 'func TestCodexConfig_StreamBootstrapTimeoutDuration(t *testing.T) {'
+          helper = '''// withBootstrapClockHandshake prevents a test server from advancing the mock
+          // clock before the executor captures the start of its bootstrap window.
+          func withBootstrapClockHandshake(t *testing.T, initial time.Time) (*mockClock, <-chan struct{}) {
+          \tclock := &mockClock{cur: initial}
+          \tstarted := make(chan struct{})
+          \tvar once sync.Once
+          \tcleanup := setCodexBootstrapNowForTest(func() time.Time {
+          \t\t// Capture first: waking the server before this read races with advance.
+          \t\tnow := clock.now()
+          \t\tonce.Do(func() { close(started) })
+          \t\treturn now
+          \t})
+          \tt.Cleanup(cleanup)
+          \treturn clock, started
+          }
+
+          '''
+          assert s.count(anchor) == 1 and 'func withBootstrapClockHandshake' not in s
+          s = s.replace(anchor, helper + anchor)
+          old = '''\tclock := withMockClock(t, t0)
+
+          \tbootstrapStarted := make(chan struct{})
+          \tvar once sync.Once
+          \tcleanup := setCodexBootstrapNowForTest(func() time.Time {
+          \t\tonce.Do(func() {
+          \t\t\tclose(bootstrapStarted)
+          \t\t})
+          \t\treturn clock.now()
+          \t})
+          \tt.Cleanup(cleanup)'''
+          assert s.count(old) == 2
+          s = s.replace(old, '\tclock, bootstrapStarted := withBootstrapClockHandshake(t, t0)')
+          for suffix in ['TimeBudgetReleasesStream', 'OverloadDirectlyAfterTimeoutDeliveredInStream', 'StatusBearingErrorAfterTimeoutDeliveredInStream']:
+              name = 'TestCodexWebsocketsExecutor_BootstrapBuffering_' + suffix
+              start = s.index('func ' + name + '(')
+              end = s.index('\n}\n', start) + 3
+              section = s[start:end]
+              assert section.count('clock := withMockClock(t, t0)') == 1
+              assert section.count('clock.advance(11 * time.Second)') == 1
+              section = section.replace('clock := withMockClock(t, t0)', 'clock, bootstrapStarted := withBootstrapClockHandshake(t, t0)')
+              section = section.replace('\t\tclock.advance(11 * time.Second)', '\t\t<-bootstrapStarted\n\t\tclock.advance(11 * time.Second)')
+              s = s[:start] + section + s[end:]
+          p.write_text(s)
+          PY
+          gofmt -w internal/runtime/executor/codex_stream_bootstrap_buffering_test.go
+          git diff --check
+          git diff --stat
+      - name: Stress timeout ordering tests
+        run: go test ./internal/runtime/executor -run 'TestCodex(Websockets)?Executor_BootstrapBuffering_(TimeBudgetReleasesStream|OverloadDirectlyAfterTimeoutDeliveredInStream|StatusBearingErrorAfterTimeoutDeliveredInStream)$' -count=100
       - name: Build server
         run: go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
-      - name: Test host integration and upstream behavior
+      - name: Run the complete Go suite
         run: go test ./...
-      - name: Verify version and discovery output
+      - name: Verify CLI probes
         shell: bash
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/cli-proxy-api" --version
-          "$RUNNER_TEMP/cli-proxy-api" discover --json --timeout 1 > "$RUNNER_TEMP/discovery.json"
-          python3 -m json.tool "$RUNNER_TEMP/discovery.json" > /dev/null
-      - name: Commit the verified merge to the synchronization branch
+          "$RUNNER_TEMP/cli-proxy-api" discover --json --timeout 1 | python3 -m json.tool > /dev/null
+          "$RUNNER_TEMP/cli-proxy-api" --discover-json --discover-timeout 1 | python3 -m json.tool > /dev/null
+      - name: Publish the verified test-only fix
         shell: bash
         run: |
           set -euo pipefail
-          git commit -m 'Merge upstream 61fdfc34 with Pinable host integration preserved' -m 'Resolve startup, tests, and SDK builder conflicts; isolate host extensions from upstream initialization. Verified with go build, go test ./..., and CLI smoke checks.'
-          git merge-base --is-ancestor 491e5413d084f74614f10834d63b76d288fb3e56 HEAD
-          git merge-base --is-ancestor 61fdfc341b96178a8dcb53f2efc46cbc341d267c HEAD
+          git config user.name 'Pinable sync'
+          git config user.email 'noreply@pinable.cc'
+          git add internal/runtime/executor/codex_stream_bootstrap_buffering_test.go
+          git commit -m 'test: synchronize Codex bootstrap mock clocks before advancing time' -m 'Fix scheduler-dependent timeout fixtures with a captured-start handshake. Preserve production executor behavior and all assertions. Verified with 100 repetitions per timeout case, go build, go test ./..., and CLI probes.'
           git push origin HEAD:refs/heads/sync/upstream-20260920

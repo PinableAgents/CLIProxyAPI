@@ -1,0 +1,69 @@
+name: Pinable sync 20260920
+
+on:
+  push:
+    branches: [sync/upstream-20260920]
+    paths: [.github/pinable-sync-20260920.patch]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pinable-sync-20260920
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    if: github.repository == 'PinableAgents/CLIProxyAPI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge the pinned fork revision and apply the reviewed resolution
+        shell: bash
+        env:
+          FORK_SHA: 491e5413d084f74614f10834d63b76d288fb3e56
+          UPSTREAM_SHA: 61fdfc341b96178a8dcb53f2efc46cbc341d267c
+        run: |
+          set -euo pipefail
+          git config user.name 'Pinable sync'
+          git config user.email 'noreply@pinable.cc'
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          test "$(git rev-parse origin/main)" = "$FORK_SHA"
+          git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD
+          if ! git merge --no-commit --no-ff "$FORK_SHA"; then
+            printf '%s\n' cmd/server/main.go cmd/server/main_test.go sdk/cliproxy/builder.go > "$RUNNER_TEMP/expected-conflicts.txt"
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/actual-conflicts.txt"
+            diff -u "$RUNNER_TEMP/expected-conflicts.txt" "$RUNNER_TEMP/actual-conflicts.txt"
+          fi
+          git checkout "$FORK_SHA" -- cmd/server/main.go cmd/server/main_test.go sdk/cliproxy/builder.go
+          git apply --check --index .github/pinable-sync-20260920.patch
+          git apply --index .github/pinable-sync-20260920.patch
+          test -z "$(git ls-files -u)"
+          git diff --cached --check
+          git diff --cached --stat
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build server
+        run: go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
+      - name: Test host integration and upstream behavior
+        run: go test ./...
+      - name: Verify version and discovery output
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/cli-proxy-api" --version
+          "$RUNNER_TEMP/cli-proxy-api" discover --json --timeout 1 > "$RUNNER_TEMP/discovery.json"
+          python3 -m json.tool "$RUNNER_TEMP/discovery.json" > /dev/null
+      - name: Commit the verified merge to the synchronization branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git commit -m 'Merge upstream 61fdfc34 with Pinable host integration preserved' -m 'Resolve startup, tests, and SDK builder conflicts; isolate host extensions from upstream initialization. Verified with go build, go test ./..., and CLI smoke checks.'
+          git merge-base --is-ancestor 491e5413d084f74614f10834d63b76d288fb3e56 HEAD
+          git merge-base --is-ancestor 61fdfc341b96178a8dcb53f2efc46cbc341d267c HEAD
+          git push origin HEAD:refs/heads/sync/upstream-20260920

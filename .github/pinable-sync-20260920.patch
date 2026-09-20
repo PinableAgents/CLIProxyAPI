@@ -1,0 +1,697 @@
+diff --git a/cmd/server/host_runtime.go b/cmd/server/host_runtime.go
+new file mode 100644
+index 00000000..974a40fb
+--- /dev/null
++++ b/cmd/server/host_runtime.go
+@@ -0,0 +1,44 @@
++package main
++
++import (
++	"fmt"
++	"io"
++	"os"
++	"strings"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
++)
++
++const hostRuntimeContractVersion = "1"
++
++// printHostVersion handles host probes before config loading or discovery output.
++func printHostVersion(args []string, output io.Writer) bool {
++	if !versionRequested(args) {
++		return false
++	}
++	_, _ = fmt.Fprintf(output, "CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
++	return true
++}
++
++func versionRequested(args []string) bool {
++	for _, arg := range args {
++		if arg == "--version" || arg == "-version" {
++			return true
++		}
++	}
++	return false
++}
++
++func hostOptionsFromEnv(parentPID int) cmd.HostOptions {
++	return cmd.HostOptions{
++		RuntimeContractVersion: hostRuntimeContractVersion,
++		ParentPID:              parentPID,
++		EphemeralAPIKey:        strings.TrimSpace(os.Getenv("CLIPROXY_EPHEMERAL_API_KEY")),
++	}
++}
++
++// applyHostSafeMode preserves upstream decisions unless the host supplies a key.
++func applyHostSafeMode(enabled bool, options cmd.HostOptions) bool {
++	return enabled && strings.TrimSpace(options.EphemeralAPIKey) == ""
++}
+ diff --git a/cmd/server/host_runtime_test.go b/cmd/server/host_runtime_test.go
+new file mode 100644
+index 00000000..2d611561
+--- /dev/null
++++ b/cmd/server/host_runtime_test.go
+@@ -0,0 +1,67 @@
++package main
++
++import (
++	"bytes"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++)
++
++func TestVersionRequested(t *testing.T) {
++	for _, args := range [][]string{{"--version"}, {"-version"}, {"--version", "--config", "ignored.yaml"}} {
++		if !versionRequested(args) {
++			t.Fatalf("versionRequested(%q) = false", args)
++		}
++	}
++	for _, args := range [][]string{nil, {"--config", "config.yaml"}, {"--versioned"}, {"discover", "--json"}, {"--discover-json"}} {
++		if versionRequested(args) {
++			t.Fatalf("versionRequested(%q) = true", args)
++		}
++	}
++}
++
++func TestPrintHostVersionDoesNotPolluteDiscoveryOutput(t *testing.T) {
++	for _, args := range [][]string{nil, {"discover", "--json"}, {"--discover-json"}, {"--discover-json=true"}} {
++		var output bytes.Buffer
++		if printHostVersion(args, &output) || output.Len() != 0 {
++			t.Fatalf("unexpected version output for %q: %q", args, output.String())
++		}
++	}
++	var output bytes.Buffer
++	if !printHostVersion([]string{"--version"}, &output) {
++		t.Fatal("version probe was not handled")
++	}
++	if !strings.HasPrefix(output.String(), "CLIProxyAPI Version: ") || strings.Count(output.String(), "\n") != 1 {
++		t.Fatalf("unexpected version output: %q", output.String())
++	}
++}
++
++func TestHostOptionsFromEnv(t *testing.T) {
++	t.Setenv("CLIPROXY_EPHEMERAL_API_KEY", "  runtime-secret  ")
++	options := hostOptionsFromEnv(42)
++	if options.RuntimeContractVersion != "1" || options.ParentPID != 42 || options.EphemeralAPIKey != "runtime-secret" {
++		t.Fatal("host options did not preserve the runtime contract")
++	}
++}
++
++func TestHostSafeModePreservesUpstreamDecisions(t *testing.T) {
++	for _, key := range []string{"", " ", "runtime-secret"} {
++		for _, enabled := range []bool{false, true} {
++			got := applyHostSafeMode(enabled, cmd.HostOptions{EphemeralAPIKey: key})
++			want := enabled && strings.TrimSpace(key) == ""
++			if got != want {
++				t.Fatalf("applyHostSafeMode(enabled=%v, configured=%v) = %v, want %v", enabled, strings.TrimSpace(key) != "", got, want)
++			}
++		}
++	}
++	cfg := &config.Config{SDKConfig: config.SDKConfig{APIKeys: []string{"your-api-key-1"}}}
++	enabled := shouldEnableExampleAPIKeySafeMode(cfg, false, false, false, false, false)
++	if !enabled {
++		t.Fatal("upstream must still detect example config keys")
++	}
++	if applyHostSafeMode(enabled, cmd.HostOptions{EphemeralAPIKey: "runtime-secret"}) {
++		t.Fatal("a configured host key must preserve desktop availability")
++	}
++}
+ diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 90efd776..b2c327f3 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -13,6 +13,7 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -48,8 +49,6 @@ var (
+ 	DefaultConfigPath = ""
+ )
+ 
+-const hostRuntimeContractVersion = "1"
+-
+ // init initializes the shared logger setup.
+ func init() {
+ 	logging.SetupBaseLogger()
+@@ -58,13 +57,10 @@ func init() {
+ 	buildinfo.BuildDate = BuildDate
+ }
+ 
+-func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode, ephemeralConfigured bool) bool {
++func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode bool) bool {
+ 	if cfg == nil || commandMode || homeMode || cloudConfigMissing {
+ 		return false
+ 	}
+-	if ephemeralConfigured {
+-		return false
+-	}
+ 	if tuiMode && !standalone {
+ 		return false
+ 	}
+@@ -75,11 +71,42 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
+ // It parses command-line flags, loads configuration, and starts the appropriate
+ // service based on the provided flags (login, codex-login, or server mode).
+ func main() {
+-	fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+-	if versionRequested(os.Args[1:]) {
++	if printHostVersion(os.Args[1:], os.Stdout) {
+ 		return
+ 	}
+ 
++	if len(os.Args) > 1 && os.Args[1] == "discover" {
++		discoverFlags := flag.NewFlagSet("discover", flag.ExitOnError)
++		timeoutSec := discoverFlags.Int("timeout", 3, "Discovery timeout in seconds")
++		jsonOut := discoverFlags.Bool("json", false, "Output in JSON format")
++		serviceType := discoverFlags.String("service-type", "", "DNS-SD service type (default _ai-gateway._tcp)")
++		configPathFlag := discoverFlags.String("config", DefaultConfigPath, "Configure File Path")
++		var include, exclude []string
++		discoverFlags.Func("include", "Comma-separated interface names to scan (overrides default physical LAN filter)", appendCSV(&include))
++		discoverFlags.Func("exclude", "Comma-separated interface names to skip", appendCSV(&exclude))
++		_ = discoverFlags.Parse(os.Args[2:])
++		if !*jsonOut {
++			fmt.Fprintf(os.Stderr, "CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
++		}
++		cfgInclude, cfgExclude := cmd.LoadDiscoveryScanFilters(*configPathFlag)
++		include, exclude = cmd.ResolveDiscoveryInterfaceFilters(include, exclude, cfgInclude, cfgExclude)
++		code := cmd.DoDiscoverWithOptions(cmd.DiscoverOptions{
++			Timeout:     time.Duration(*timeoutSec) * time.Second,
++			JSONOutput:  *jsonOut,
++			ServiceType: *serviceType,
++			Include:     include,
++			Exclude:     exclude,
++		})
++		os.Exit(code)
++	}
++
++	// For legacy --discover-json flag or JSON requests, keep stdout clean
++	isJSONDiscover := argvEnablesBoolFlag(os.Args[1:], "discover-json")
++	isDiscoverMode := isJSONDiscover || argvEnablesBoolFlag(os.Args[1:], "discover")
++	if !isJSONDiscover {
++		fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
++	}
++
+ 	// Command-line flags to control the application's behavior.
+ 	var codexLogin bool
+ 	var codexDeviceLogin bool
+@@ -90,6 +117,13 @@ func main() {
+ 	var kimiLogin bool
+ 	var xaiLogin bool
+ 	var devinLogin bool
++	var metaLogin bool
++	var discoverGateways bool
++	var discoverTimeout int
++	var discoverJSON bool
++	var discoverServiceType string
++	var discoverInclude []string
++	var discoverExclude []string
+ 	var vertexImport string
+ 	var vertexImportPrefix string
+ 	var configPath string
+@@ -111,6 +145,13 @@ func main() {
+ 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
+ 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
+ 	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
++	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta using OAuth")
++	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
++	flag.IntVar(&discoverTimeout, "discover-timeout", 3, "Timeout in seconds for LAN discovery (default 3s)")
++	flag.BoolVar(&discoverJSON, "discover-json", false, "Output discovered gateways in JSON format")
++	flag.StringVar(&discoverServiceType, "discover-service-type", "", "DNS-SD service type for LAN discovery (default _ai-gateway._tcp)")
++	flag.Func("discover-include", "Comma-separated interface names to scan during LAN discovery", appendCSV(&discoverInclude))
++	flag.Func("discover-exclude", "Comma-separated interface names to skip during LAN discovery", appendCSV(&discoverExclude))
+ 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
+ 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
+ 	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")
+@@ -150,9 +191,11 @@ func main() {
+ 	}
+ 
+ 	pluginHost := pluginhost.New()
+-	if bootstrapCfg := loadPluginBootstrapConfig(pluginBootstrapConfigPath(os.Args[1:], DefaultConfigPath)); bootstrapCfg != nil {
+-		pluginHost.ApplyConfig(context.Background(), bootstrapCfg)
+-		pluginHost.RegisterCommandLineFlags(context.Background(), flag.CommandLine)
++	if !isDiscoverMode {
++		if bootstrapCfg := loadPluginBootstrapConfig(pluginBootstrapConfigPath(os.Args[1:], DefaultConfigPath)); bootstrapCfg != nil {
++			pluginHost.ApplyConfig(context.Background(), bootstrapCfg)
++			pluginHost.RegisterCommandLineFlags(context.Background(), flag.CommandLine)
++		}
+ 	}
+ 
+ 	// Parse the command-line flags.
+@@ -162,6 +205,19 @@ func main() {
+ 		return
+ 	}
+ 
++	if discoverGateways || discoverJSON {
++		cfgInclude, cfgExclude := cmd.LoadDiscoveryScanFilters(configPath)
++		include, exclude := cmd.ResolveDiscoveryInterfaceFilters(discoverInclude, discoverExclude, cfgInclude, cfgExclude)
++		code := cmd.DoDiscoverWithOptions(cmd.DiscoverOptions{
++			Timeout:     time.Duration(discoverTimeout) * time.Second,
++			JSONOutput:  discoverJSON,
++			ServiceType: discoverServiceType,
++			Include:     include,
++			Exclude:     exclude,
++		})
++		os.Exit(code)
++	}
++
+ 	// Core application variables.
+ 	var err error
+ 	var cfg *config.Config
+@@ -604,16 +660,12 @@ func main() {
+ 		CallbackPort: oauthCallbackPort,
+ 	}
+ 
+-	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin || devinLogin
++	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin || devinLogin || metaLogin
+ 	cloudConfigMissing := isCloudDeploy && !configFileExists
+ 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
+-	ephemeralAPIKey := strings.TrimSpace(os.Getenv("CLIPROXY_EPHEMERAL_API_KEY"))
+-	hostOptions := cmd.HostOptions{
+-		RuntimeContractVersion: hostRuntimeContractVersion,
+-		ParentPID:              parentPID,
+-		EphemeralAPIKey:        ephemeralAPIKey,
+-	}
+-	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode, ephemeralAPIKey != "")
++	hostOptions := hostOptionsFromEnv(parentPID)
++	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
++	exampleAPIKeySafeMode = applyHostSafeMode(exampleAPIKeySafeMode, hostOptions)
+ 	serverOptions := []api.ServerOption(nil)
+ 	if exampleAPIKeySafeMode {
+ 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)
+@@ -686,6 +738,8 @@ func main() {
+ 		cmd.DoXAILogin(cfg, options)
+ 	} else if devinLogin {
+ 		cmd.DoDevinLogin(cfg, options)
++	} else if metaLogin {
++		cmd.DoMetaLogin(cfg, options)
+ 	} else {
+ 		// In cloud deploy mode without config file, just wait for shutdown signals
+ 		if isCloudDeploy && !configFileExists {
+@@ -781,15 +835,6 @@ func main() {
+ 	}
+ }
+ 
+-func versionRequested(args []string) bool {
+-	for _, arg := range args {
+-		if arg == "--version" || arg == "-version" {
+-			return true
+-		}
+-	}
+-	return false
+-}
+-
+ // modelCatalogUpdaterPlan decides which remote model catalogs should refresh.
+ // Codex client and Devin catalogs still refresh under Home mode because
+ // template metadata and Devin models stay edge-local.
+@@ -870,3 +915,59 @@ func loadPluginBootstrapConfig(path string) *config.Config {
+ 	}
+ 	return cfg
+ }
++
++func appendCSV(dst *[]string) func(string) error {
++	return func(raw string) error {
++		*dst = append(*dst, cmd.ParseInterfaceList(raw)...)
++		return nil
++	}
++}
++
++func argvEnablesBoolFlag(args []string, name string) bool {
++	enabled := false
++	for i := 0; i < len(args); i++ {
++		arg := args[i]
++		if arg == "--" {
++			break
++		}
++		if arg == "-" || !strings.HasPrefix(arg, "-") {
++			break
++		}
++		flagName, value, hasValue := splitArgvFlag(arg)
++		if flagName == name {
++			if !hasValue {
++				enabled = true
++			} else if parsed, errParse := strconv.ParseBool(value); errParse == nil {
++				enabled = parsed
++			}
++		}
++		if !hasValue && argvFlagConsumesValue(flagName) {
++			if i+1 < len(args) && args[i+1] != "--" {
++				i++
++			}
++		}
++	}
++	return enabled
++}
++
++func argvFlagConsumesValue(name string) bool {
++	switch name {
++	case "codex-login", "codex-device-login", "claude-login", "no-browser",
++		"antigravity-login", "kimi-login", "xai-login", "devin-login",
++		"discover", "discover-json", "home-disable-cluster-discovery",
++		"tui", "standalone", "local-model":
++		return false
++	default:
++		return name != ""
++	}
++}
++
++func splitArgvFlag(arg string) (name, value string, hasValue bool) {
++	if !strings.HasPrefix(arg, "-") {
++		return "", "", false
++	}
++	arg = strings.TrimPrefix(arg, "-")
++	arg = strings.TrimPrefix(arg, "-")
++	name, value, hasValue = strings.Cut(arg, "=")
++	return name, value, hasValue
++}
+ diff --git a/cmd/server/main_test.go b/cmd/server/main_test.go
+index c866abb2..320e35a7 100644
+--- a/cmd/server/main_test.go
++++ b/cmd/server/main_test.go
+@@ -6,16 +6,28 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+ )
+ 
+-func TestVersionRequested(t *testing.T) {
+-	for _, args := range [][]string{{"--version"}, {"-version"}, {"--version", "--config", "ignored.yaml"}} {
+-		if !versionRequested(args) {
+-			t.Fatalf("versionRequested(%q) = false", args)
+-		}
++	func TestArgvEnablesBoolFlag(t *testing.T) {
++	tests := []struct {
++		name string
++		args []string
++		flag string
++		want bool
++	}{
++		{name: "bare long flag", args: []string{"--discover-json"}, flag: "discover-json", want: true},
++		{name: "assigned true", args: []string{"--discover-json=true"}, flag: "discover-json", want: true},
++		{name: "assigned false", args: []string{"--discover-json=false"}, flag: "discover-json", want: false},
++		{name: "does not match timeout", args: []string{"--discover-timeout", "3"}, flag: "discover", want: false},
++		{name: "bare discover", args: []string{"--discover"}, flag: "discover", want: true},
++		{name: "stops at terminator", args: []string{"--", "--discover-json"}, flag: "discover-json", want: false},
++		{name: "stops at non-flag", args: []string{"foo", "--discover-json"}, flag: "discover-json", want: false},
++		{name: "skips config value", args: []string{"--config", "config.yaml", "--discover-json"}, flag: "discover-json", want: true},
+ 	}
+-	for _, args := range [][]string{nil, {"--config", "config.yaml"}, {"--versioned"}} {
+-		if versionRequested(args) {
+-			t.Fatalf("versionRequested(%q) = true", args)
+-		}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			if got := argvEnablesBoolFlag(tt.args, tt.flag); got != tt.want {
++				t.Fatalf("argvEnablesBoolFlag(%v, %q) = %t, want %t", tt.args, tt.flag, got, tt.want)
++			}
++		})
+ 	}
+ }
+ 
+@@ -32,15 +44,14 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
+ 	}
+ 
+ 	tests := []struct {
+-		name                string
+-		cfg                 *config.Config
+-		commandMode         bool
+-		tuiMode             bool
+-		standalone          bool
+-		cloudConfigMissing  bool
+-		homeMode            bool
+-		ephemeralConfigured bool
+-		want                bool
++		name               string
++		cfg                *config.Config
++		commandMode        bool
++		tuiMode            bool
++		standalone         bool
++		cloudConfigMissing bool
++		homeMode           bool
++		want               bool
+ 	}{
+ 		{
+ 			name: "normal server with example key",
+@@ -80,12 +91,6 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
+ 			cloudConfigMissing: true,
+ 			want:               false,
+ 		},
+-		{
+-			name:                "ephemeral key keeps server available with example config key",
+-			cfg:                 cfgWithExampleKey,
+-			ephemeralConfigured: true,
+-			want:                false,
+-		},
+ 		{
+ 			name: "normal server with real key",
+ 			cfg:  cfgWithRealKey,
+@@ -100,7 +105,7 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
+ 
+ 	for _, tt := range tests {
+ 		t.Run(tt.name, func(t *testing.T) {
+-			got := shouldEnableExampleAPIKeySafeMode(tt.cfg, tt.commandMode, tt.tuiMode, tt.standalone, tt.cloudConfigMissing, tt.homeMode, tt.ephemeralConfigured)
++			got := shouldEnableExampleAPIKeySafeMode(tt.cfg, tt.commandMode, tt.tuiMode, tt.standalone, tt.cloudConfigMissing, tt.homeMode)
+ 			if got != tt.want {
+ 				t.Fatalf("shouldEnableExampleAPIKeySafeMode() = %t, want %t", got, tt.want)
+ 			}
+ diff --git a/internal/api/handlers/management/handler.go b/internal/api/handlers/management/handler.go
+index 4fac4e66..63daef43 100644
+--- a/internal/api/handlers/management/handler.go
++++ b/internal/api/handlers/management/handler.go
+@@ -61,8 +61,9 @@ type Handler struct {
+ 	pluginStoreHTTPClient   pluginstore.HTTPDoer
+ 	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
+ 	pluginReleases          pluginReleaseCache
+-	runtimeInfo             RuntimeInfo
+-	runtimeShutdown         func()
++
++	runtimeInfo     RuntimeInfo
++	runtimeShutdown func()
+ }
+ 
+ type configReloadSnapshot struct {
+ diff --git a/sdk/cliproxy/builder.go b/sdk/cliproxy/builder.go
+index 9ce84632..4048e446 100644
+--- a/sdk/cliproxy/builder.go
++++ b/sdk/cliproxy/builder.go
+@@ -181,12 +181,6 @@ func (b *Builder) WithLocalManagementPassword(password string) *Builder {
+ 	return b
+ }
+ 
+-// WithEphemeralAPIKey registers a runtime-only API key for public API requests.
+-func (b *Builder) WithEphemeralAPIKey(key string) *Builder {
+-	b.ephemeralAPIKey = key
+-	return b
+-}
+-
+ // WithPostAuthHook registers a hook to be called after an Auth record is created
+ // but before it is persisted to storage.
+ func (b *Builder) WithPostAuthHook(hook coreauth.PostAuthHook) *Builder {
+@@ -253,12 +247,7 @@ func (b *Builder) Build() (*Service, error) {
+ 		pluginHost.ApplyConfig(context.Background(), b.cfg)
+ 		pluginHost.RegisterFrontendAuthProviders()
+ 	}
+-	accessProviders := sdkaccess.RegisteredProviders()
+-	runtimeAccessProvider := configaccess.NewRuntimeAPIKeyProvider("cliproxyapi-ephemeral", b.ephemeralAPIKey)
+-	if runtimeAccessProvider != nil {
+-		accessProviders = append(accessProviders, runtimeAccessProvider)
+-	}
+-	accessManager.SetProviders(accessProviders)
++	accessManager.SetProviders(sdkaccess.RegisteredProviders())
+ 
+ 	coreManager := b.coreManager
+ 	cooldownStateStore := b.cooldownStateStore
+@@ -288,33 +277,26 @@ func (b *Builder) Build() (*Service, error) {
+ 	if b.resultPolicy != nil {
+ 		coreManager.SetResultPolicy(b.resultPolicy)
+ 	}
+-	var runtimeAccessProviders []sdkaccess.Provider
+-	if runtimeAccessProvider != nil {
+-		runtimeAccessProviders = []sdkaccess.Provider{runtimeAccessProvider}
+-	}
+ 
+ 	service := &Service{
+-		cfg:                    b.cfg,
+-		configPath:             b.configPath,
+-		tokenProvider:          tokenProvider,
+-		apiKeyProvider:         apiKeyProvider,
+-		watcherFactory:         watcherFactory,
+-		hooks:                  b.hooks,
+-		authManager:            authManager,
+-		accessManager:          accessManager,
+-		runtimeAccessProviders: runtimeAccessProviders,
+-		coreManager:            coreManager,
+-		cooldownStateStore:     cooldownStateStore,
+-		pluginHost:             pluginHost,
+-		appliedRoutingState:    appliedRoutingState,
+-		serverOptions:          append([]api.ServerOption(nil), b.serverOptions...),
++		cfg:                 b.cfg,
++		configPath:          b.configPath,
++		tokenProvider:       tokenProvider,
++		apiKeyProvider:      apiKeyProvider,
++		watcherFactory:      watcherFactory,
++		hooks:               b.hooks,
++		authManager:         authManager,
++		accessManager:       accessManager,
++		coreManager:         coreManager,
++		cooldownStateStore:  cooldownStateStore,
++		pluginHost:          pluginHost,
++		discoveryManager:    newDiscoveryAdvertiserManager(),
++		appliedRoutingState: appliedRoutingState,
++		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
+ 	}
+ 	if b.postAuthHook != nil {
+ 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
+ 	}
+-	if runtimeAccessProvider != nil {
+-		service.serverOptions = append(service.serverOptions, api.WithRuntimeAccessProviders(runtimeAccessProvider))
+-	}
+ 	service.serverOptions = append(service.serverOptions,
+ 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
+ 		api.WithPluginHost(pluginHost),
+@@ -322,6 +304,7 @@ func (b *Builder) Build() (*Service, error) {
+ 			service.reloadConfigFromWatcher()
+ 		}),
+ 	)
++	service.configureRuntimeAccess(b.ephemeralAPIKey)
+ 	return service, nil
+ }
+ 
+@@ -348,7 +331,8 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
+ 			}
+ 		}
+ 		// Detach from request cancellation so runtime model registration always completes
+-		// once the credential has been persisted to disk.
++		// once the credential has been persisted to disk. If the watcher consumer already
++		// claimed this revision, handleAuthUpdate waits for that registration to finish.
+ 		syncCtx := coreauth.WithSkipPersist(context.Background())
+ 		s.handleAuthUpdate(syncCtx, update)
+ 		return nil
+ diff --git a/sdk/cliproxy/builder_ephemeral_access_test.go b/sdk/cliproxy/builder_ephemeral_access_test.go
+index 2015ebc3..8ab13589 100644
+--- a/sdk/cliproxy/builder_ephemeral_access_test.go
++++ b/sdk/cliproxy/builder_ephemeral_access_test.go
+@@ -56,3 +56,86 @@ func TestBuilderRegistersEphemeralAPIKeyWithAccessManager(t *testing.T) {
+ 		t.Fatalf("wrong key error = %v, want invalid credential", authErr)
+ 	}
+ }
++
++func TestBuilderRuntimeAccessPreservesUpstreamInitialization(t *testing.T) {
++	for _, key := range []string{"", "   ", "runtime-secret"} {
++		t.Run(key, func(t *testing.T) {
++			cfg := &proxyconfig.Config{AuthDir: filepath.Join(t.TempDir(), "auths")}
++			cfg.APIKeys = []string{"configured-key"}
++			service, errBuild := NewBuilder().
++				WithConfig(cfg).
++				WithConfigPath(filepath.Join(t.TempDir(), "config.yaml")).
++				WithEphemeralAPIKey(key).
++				Build()
++			if errBuild != nil {
++				t.Fatalf("Build() error = %v", errBuild)
++			}
++			if service.discoveryManager == nil {
++				t.Fatal("host authentication must not discard upstream discovery initialization")
++			}
++			if len(cfg.APIKeys) != 1 || cfg.APIKeys[0] != "configured-key" {
++				t.Fatal("the ephemeral key must not modify persisted configuration")
++			}
++			wantRuntimeProviders := 0
++			if key == "runtime-secret" {
++				wantRuntimeProviders = 1
++			}
++			if len(service.runtimeAccessProviders) != wantRuntimeProviders {
++				t.Fatalf("runtime providers = %d, want %d", len(service.runtimeAccessProviders), wantRuntimeProviders)
++			}
++			for i := 0; i < 3; i++ {
++				service.syncPluginRuntimeConfigForConfig(context.Background(), cfg)
++			}
++			count := 0
++			for _, provider := range service.accessManager.Providers() {
++				if provider != nil && provider.Identifier() == "cliproxyapi-ephemeral" {
++					count++
++				}
++			}
++			if count != wantRuntimeProviders {
++				t.Fatalf("runtime providers after reload = %d, want %d", count, wantRuntimeProviders)
++			}
++			request, errRequest := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost/v1/models", nil)
++			if errRequest != nil {
++				t.Fatalf("create request: %v", errRequest)
++			}
++			request.Header.Set("Authorization", "Bearer configured-key")
++			if _, authErr := service.accessManager.Authenticate(request.Context(), request); authErr != nil {
++				t.Fatalf("configured authentication was lost: %v", authErr)
++			}
++		})
++	}
++}
++
++func TestBuilderRuntimeAccessIsServiceScoped(t *testing.T) {
++	keys := []string{"first-runtime-key", "second-runtime-key"}
++	services := make([]*Service, len(keys))
++	for i, key := range keys {
++		cfg := &proxyconfig.Config{AuthDir: filepath.Join(t.TempDir(), "auths")}
++		service, errBuild := NewBuilder().
++			WithConfig(cfg).
++			WithConfigPath(filepath.Join(t.TempDir(), "config.yaml")).
++			WithEphemeralAPIKey(key).
++			Build()
++		if errBuild != nil {
++			t.Fatalf("Build() error = %v", errBuild)
++		}
++		services[i] = service
++	}
++	for i, service := range services {
++		for j, key := range keys {
++			request, errRequest := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost/v1/models", nil)
++			if errRequest != nil {
++				t.Fatalf("create request: %v", errRequest)
++			}
++			request.Header.Set("Authorization", "Bearer "+key)
++			_, authErr := service.accessManager.Authenticate(request.Context(), request)
++			if i == j && authErr != nil {
++				t.Fatalf("service %d rejected its own key: %v", i, authErr)
++			}
++			if i != j && !sdkaccess.IsAuthErrorCode(authErr, sdkaccess.AuthErrorCodeInvalidCredential) {
++				t.Fatalf("service %d accepted another service's key", i)
++			}
++		}
++	}
++}
+ diff --git a/sdk/cliproxy/builder_runtime.go b/sdk/cliproxy/builder_runtime.go
+new file mode 100644
+index 00000000..5fc0513b
+--- /dev/null
++++ b/sdk/cliproxy/builder_runtime.go
+@@ -0,0 +1,26 @@
++package cliproxy
++
++import (
++	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
++	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
++)
++
++// WithEphemeralAPIKey registers a runtime-only API key for public API requests.
++func (b *Builder) WithEphemeralAPIKey(key string) *Builder {
++	b.ephemeralAPIKey = key
++	return b
++}
++
++// configureRuntimeAccess keeps host credentials out of the upstream service literal.
++// It runs once during Build, before the service is published to the caller.
++func (s *Service) configureRuntimeAccess(key string) {
++	provider := configaccess.NewRuntimeAPIKeyProvider("cliproxyapi-ephemeral", key)
++	if provider == nil {
++		return
++	}
++	s.runtimeAccessProviders = []sdkaccess.Provider{provider}
++	providers := append(s.accessManager.Providers(), provider)
++	s.accessManager.SetProviders(providers)
++	s.serverOptions = append(s.serverOptions, api.WithRuntimeAccessProviders(provider))
++}

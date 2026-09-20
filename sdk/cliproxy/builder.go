@@ -181,12 +181,6 @@ func (b *Builder) WithLocalManagementPassword(password string) *Builder {
 	return b
 }
 
-// WithEphemeralAPIKey registers a runtime-only API key for public API requests.
-func (b *Builder) WithEphemeralAPIKey(key string) *Builder {
-	b.ephemeralAPIKey = key
-	return b
-}
-
 // WithPostAuthHook registers a hook to be called after an Auth record is created
 // but before it is persisted to storage.
 func (b *Builder) WithPostAuthHook(hook coreauth.PostAuthHook) *Builder {
@@ -253,12 +247,7 @@ func (b *Builder) Build() (*Service, error) {
 		pluginHost.ApplyConfig(context.Background(), b.cfg)
 		pluginHost.RegisterFrontendAuthProviders()
 	}
-	accessProviders := sdkaccess.RegisteredProviders()
-	runtimeAccessProvider := configaccess.NewRuntimeAPIKeyProvider("cliproxyapi-ephemeral", b.ephemeralAPIKey)
-	if runtimeAccessProvider != nil {
-		accessProviders = append(accessProviders, runtimeAccessProvider)
-	}
-	accessManager.SetProviders(accessProviders)
+	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
 	coreManager := b.coreManager
 	cooldownStateStore := b.cooldownStateStore
@@ -288,32 +277,25 @@ func (b *Builder) Build() (*Service, error) {
 	if b.resultPolicy != nil {
 		coreManager.SetResultPolicy(b.resultPolicy)
 	}
-	var runtimeAccessProviders []sdkaccess.Provider
-	if runtimeAccessProvider != nil {
-		runtimeAccessProviders = []sdkaccess.Provider{runtimeAccessProvider}
-	}
 
 	service := &Service{
-		cfg:                    b.cfg,
-		configPath:             b.configPath,
-		tokenProvider:          tokenProvider,
-		apiKeyProvider:         apiKeyProvider,
-		watcherFactory:         watcherFactory,
-		hooks:                  b.hooks,
-		authManager:            authManager,
-		accessManager:          accessManager,
-		runtimeAccessProviders: runtimeAccessProviders,
-		coreManager:            coreManager,
-		cooldownStateStore:     cooldownStateStore,
-		pluginHost:             pluginHost,
-		appliedRoutingState:    appliedRoutingState,
-		serverOptions:          append([]api.ServerOption(nil), b.serverOptions...),
+		cfg:                 b.cfg,
+		configPath:          b.configPath,
+		tokenProvider:       tokenProvider,
+		apiKeyProvider:      apiKeyProvider,
+		watcherFactory:      watcherFactory,
+		hooks:               b.hooks,
+		authManager:         authManager,
+		accessManager:       accessManager,
+		coreManager:         coreManager,
+		cooldownStateStore:  cooldownStateStore,
+		pluginHost:          pluginHost,
+		discoveryManager:    newDiscoveryAdvertiserManager(),
+		appliedRoutingState: appliedRoutingState,
+		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
-	}
-	if runtimeAccessProvider != nil {
-		service.serverOptions = append(service.serverOptions, api.WithRuntimeAccessProviders(runtimeAccessProvider))
 	}
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
@@ -322,6 +304,7 @@ func (b *Builder) Build() (*Service, error) {
 			service.reloadConfigFromWatcher()
 		}),
 	)
+	service.configureRuntimeAccess(b.ephemeralAPIKey)
 	return service, nil
 }
 
@@ -348,7 +331,8 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 			}
 		}
 		// Detach from request cancellation so runtime model registration always completes
-		// once the credential has been persisted to disk.
+		// once the credential has been persisted to disk. If the watcher consumer already
+		// claimed this revision, handleAuthUpdate waits for that registration to finish.
 		syncCtx := coreauth.WithSkipPersist(context.Background())
 		s.handleAuthUpdate(syncCtx, update)
 		return nil

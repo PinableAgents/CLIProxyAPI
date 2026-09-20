@@ -61,8 +61,9 @@ type Handler struct {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
 	pluginReleases          pluginReleaseCache
-	runtimeInfo             RuntimeInfo
-	runtimeShutdown         func()
+
+	runtimeInfo     RuntimeInfo
+	runtimeShutdown func()
 }
 
 type configReloadSnapshot struct {

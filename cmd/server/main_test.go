@@ -6,16 +6,28 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-func TestVersionRequested(t *testing.T) {
-	for _, args := range [][]string{{"--version"}, {"-version"}, {"--version", "--config", "ignored.yaml"}} {
-		if !versionRequested(args) {
-			t.Fatalf("versionRequested(%q) = false", args)
-		}
+func TestArgvEnablesBoolFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		flag string
+		want bool
+	}{
+		{name: "bare long flag", args: []string{"--discover-json"}, flag: "discover-json", want: true},
+		{name: "assigned true", args: []string{"--discover-json=true"}, flag: "discover-json", want: true},
+		{name: "assigned false", args: []string{"--discover-json=false"}, flag: "discover-json", want: false},
+		{name: "does not match timeout", args: []string{"--discover-timeout", "3"}, flag: "discover", want: false},
+		{name: "bare discover", args: []string{"--discover"}, flag: "discover", want: true},
+		{name: "stops at terminator", args: []string{"--", "--discover-json"}, flag: "discover-json", want: false},
+		{name: "stops at non-flag", args: []string{"foo", "--discover-json"}, flag: "discover-json", want: false},
+		{name: "skips config value", args: []string{"--config", "config.yaml", "--discover-json"}, flag: "discover-json", want: true},
 	}
-	for _, args := range [][]string{nil, {"--config", "config.yaml"}, {"--versioned"}} {
-		if versionRequested(args) {
-			t.Fatalf("versionRequested(%q) = true", args)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := argvEnablesBoolFlag(tt.args, tt.flag); got != tt.want {
+				t.Fatalf("argvEnablesBoolFlag(%v, %q) = %t, want %t", tt.args, tt.flag, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -32,15 +44,14 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                string
-		cfg                 *config.Config
-		commandMode         bool
-		tuiMode             bool
-		standalone          bool
-		cloudConfigMissing  bool
-		homeMode            bool
-		ephemeralConfigured bool
-		want                bool
+		name               string
+		cfg                *config.Config
+		commandMode        bool
+		tuiMode            bool
+		standalone         bool
+		cloudConfigMissing bool
+		homeMode           bool
+		want               bool
 	}{
 		{
 			name: "normal server with example key",
@@ -81,12 +92,6 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 			want:               false,
 		},
 		{
-			name:                "ephemeral key keeps server available with example config key",
-			cfg:                 cfgWithExampleKey,
-			ephemeralConfigured: true,
-			want:                false,
-		},
-		{
 			name: "normal server with real key",
 			cfg:  cfgWithRealKey,
 			want: false,
@@ -100,7 +105,7 @@ func TestShouldEnableExampleAPIKeySafeMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldEnableExampleAPIKeySafeMode(tt.cfg, tt.commandMode, tt.tuiMode, tt.standalone, tt.cloudConfigMissing, tt.homeMode, tt.ephemeralConfigured)
+			got := shouldEnableExampleAPIKeySafeMode(tt.cfg, tt.commandMode, tt.tuiMode, tt.standalone, tt.cloudConfigMissing, tt.homeMode)
 			if got != tt.want {
 				t.Fatalf("shouldEnableExampleAPIKeySafeMode() = %t, want %t", got, tt.want)
 			}

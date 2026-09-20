@@ -1,0 +1,75 @@
+name: Pinable upstream check
+
+on:
+  push:
+    branches: ['sync/upstream-*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pinable-upstream-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'PinableAgents/CLIProxyAPI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check merge with the fork's main branch
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Pinable sync check'
+          git config user.email 'noreply@pinable.cc'
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if git merge --no-commit --no-ff origin/main; then
+            echo 'conflicted=false' >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U
+            if [ -z "$(git ls-files -u)" ]; then
+              exit 1
+            fi
+            echo 'conflicted=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save conflict reproduction snapshot
+        if: steps.merge.outputs.conflicted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short > "$RUNNER_TEMP/merge-status.txt"
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicted-files.txt"
+          tar -czf "$RUNNER_TEMP/cliproxy-sync-snapshot.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        if: steps.merge.outputs.conflicted == 'true'
+        with:
+          name: pinable-merge-conflict-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/cliproxy-sync-snapshot.tar.gz
+            ${{ runner.temp }}/merge-status.txt
+            ${{ runner.temp }}/conflicted-files.txt
+          retention-days: 3
+      - name: Require resolved conflicts
+        if: steps.merge.outputs.conflicted == 'true'
+        run: |
+          echo 'Resolve the recorded conflicts before merging this PR.' >&2
+          exit 1
+      - uses: actions/setup-go@v5
+        if: steps.merge.outputs.conflicted != 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify server build
+        run: go build -o "${RUNNER_TEMP}/cli-proxy-api" ./cmd/server
+      - name: Run regression tests
+        run: go test ./...

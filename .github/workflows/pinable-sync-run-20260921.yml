@@ -43,44 +43,30 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_UPSTREAM"
           bash -n scripts/pinable/sync-upstream.sh
           python3 scripts/pinable/test_sync_upstream.py -v
-      - name: Merge pinned upstream target
-        id: integrate
+      - name: Merge pinned upstream and apply reviewed conflict resolution
         shell: bash
         run: |
+          set -euo pipefail
           set +e
           git merge --no-ff --no-commit a5ab69521f7b4e0f244836d0419da8fcd89408ea
           rc=$?
           set -e
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
           if [ "$rc" -ne 0 ]; then
-            mkdir -p "$RUNNER_TEMP/conflict"
-            git status --short > "$RUNNER_TEMP/conflict/status.txt"
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflict/files.txt"
-            while IFS= read -r path; do
-              [ -n "$path" ] || continue
-              safe=$(printf '%s' "$path" | tr '/' '_')
-              git show ":1:$path" > "$RUNNER_TEMP/conflict/${safe}.base" 2>/dev/null || true
-              git show ":2:$path" > "$RUNNER_TEMP/conflict/${safe}.ours" 2>/dev/null || true
-              git show ":3:$path" > "$RUNNER_TEMP/conflict/${safe}.theirs" 2>/dev/null || true
-            done < "$RUNNER_TEMP/conflict/files.txt"
-            git diff --cc > "$RUNNER_TEMP/conflict/combined.diff" || true
+            printf '%s\n' internal/runtime/executor/codex_stream_bootstrap_buffering_test.go > "$RUNNER_TEMP/expected-conflicts.txt"
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/actual-conflicts.txt"
+            diff -u "$RUNNER_TEMP/expected-conflicts.txt" "$RUNNER_TEMP/actual-conflicts.txt"
+            # Upstream independently fixed the same mock-clock ordering race that
+            # Pinable carried as a temporary test-only patch. Keep the reviewed
+            # upstream implementation so this fork no longer diverges in this file.
+            git show a5ab69521f7b4e0f244836d0419da8fcd89408ea:internal/runtime/executor/codex_stream_bootstrap_buffering_test.go > internal/runtime/executor/codex_stream_bootstrap_buffering_test.go
+            git add internal/runtime/executor/codex_stream_bootstrap_buffering_test.go
           fi
-      - uses: actions/upload-artifact@v4
-        if: steps.integrate.outputs.rc != '0'
-        with:
-          name: cliproxy-sync-conflicts-20260921-v2
-          path: ${{ runner.temp }}/conflict
-          retention-days: 3
-      - name: Require reviewed conflict resolution
-        if: steps.integrate.outputs.rc != '0'
-        run: exit 1
-      - name: Validate clean merge result
-        if: steps.integrate.outputs.rc == '0'
+          test -z "$(git ls-files -u)"
+          git diff --cached --check
+      - name: Validate merged result
         shell: bash
         run: |
           set -euo pipefail
-          test -z "$(git ls-files -u)"
-          git diff --cached --check
           go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
           go test ./...
           go test ./internal/runtime/executor -run 'TestCodex(Websockets)?Executor_BootstrapBuffering_(TimeBudgetReleasesStream|OverloadDirectlyAfterTimeoutDeliveredInStream|StatusBearingErrorAfterTimeoutDeliveredInStream)$' -count=20
@@ -88,11 +74,10 @@ jobs:
           "$RUNNER_TEMP/cli-proxy-api" discover --json --timeout 1 | python3 -m json.tool >/dev/null
           "$RUNNER_TEMP/cli-proxy-api" --discover-json --discover-timeout 1 | python3 -m json.tool >/dev/null
       - name: Commit and publish verified merge
-        if: steps.integrate.outputs.rc == '0'
         shell: bash
         run: |
           set -euo pipefail
-          git commit -m 'Merge upstream a5ab69521f7b with Pinable host integration preserved'
+          git commit -m 'Merge upstream a5ab69521f7b with Pinable host integration preserved' -m 'Adopt upstream bootstrap mock-clock synchronization and drop the equivalent fork-only test divergence.'
           git merge-base --is-ancestor a5ab69521f7b4e0f244836d0419da8fcd89408ea HEAD
           test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3
           git push origin HEAD:refs/heads/sync/upstream-20260921-a5ab69521f7b

@@ -2,11 +2,16 @@
 
 ## Baseline and invariant
 
-The 2026-09-20 synchronization integrates `router-for-me/CLIProxyAPI` at
-`61fdfc341b96178a8dcb53f2efc46cbc341d267c` with the fork at
-`491e5413d084f74614f10834d63b76d288fb3e56`. Their shared ancestor is
-`44e62bc8acc2f224bff9c62d222717d3f6723dea`: 153 upstream commits and four
-fork-only commits were present before integration.
+The 2026-09-21 synchronization integrates `router-for-me/CLIProxyAPI` at
+`a5ab69521f7b4e0f244836d0419da8fcd89408ea` with the fork main previously at
+`390fab7820295761d3e0991dfc1fdf8121dc9927`. Their merge base is the prior
+upstream baseline `61fdfc341b96178a8dcb53f2efc46cbc341d267c`, so this run
+integrates 15 new upstream commits while retaining the fork history.
+
+The initial 2026-09-20 synchronization integrated upstream
+`61fdfc341b96178a8dcb53f2efc46cbc341d267c` with the pre-sync fork revision
+`491e5413d084f74614f10834d63b76d288fb3e56`; their shared ancestor was
+`44e62bc8acc2f224bff9c62d222717d3f6723dea`.
 
 Preserve both histories. Use a normal merge commit for synchronization PRs,
 **not squash or rebase**, and do not reset the fork to upstream. Keeping the
@@ -27,42 +32,50 @@ on the next sync. Never resolve all conflicts with blanket `ours` or `theirs`.
 - Upstream startup paths and SDK initialization remain intact, including discovery,
   provider login modes, plugin hooks, and `discoveryManager` initialization.
 
-## Conflict reduction implemented in this sync
+## Conflict reduction
 
-The three actual conflicted files were `cmd/server/main.go`,
-`cmd/server/main_test.go`, and `sdk/cliproxy/builder.go`.
-
-Host version detection, environment handling, and safe-mode adaptation live in
+The first synchronization conflicted in `cmd/server/main.go`,
+`cmd/server/main_test.go`, and `sdk/cliproxy/builder.go`. Host version detection,
+environment handling, and safe-mode adaptation therefore live in
 `cmd/server/host_runtime.go`, with dedicated tests in `host_runtime_test.go`.
-The upstream safe-mode function and `main_test.go` are retained unchanged from
-the pinned upstream revision. This avoids repeatedly competing for the top of
-upstream's test file or extending upstream function signatures.
+The upstream safe-mode function and `main_test.go` remain upstream-shaped rather
+than carrying host-specific signatures.
 
 The ephemeral-key builder option and initialization live in
 `sdk/cliproxy/builder_runtime.go`. The upstream service constructor literal is
 retained, followed by one host-specific initialization call. This prevents a
 long fork-only field name from reformatting the entire literal and colliding
-with newly added upstream fields. Runtime fields in the management handler
-are separated into their own formatting group for the same reason.
+with newly added upstream fields. Runtime fields in the management handler are
+kept in their own formatting group for the same reason.
+
+The 2026-09-21 synchronization had exactly one textual conflict:
+`internal/runtime/executor/codex_stream_bootstrap_buffering_test.go`. Upstream had
+independently added the same captured-start mock-clock synchronization that the
+fork introduced on 2026-09-20. The reviewed resolution adopts the complete
+upstream version and removes the equivalent fork-only helper/edits. The file is
+therefore no longer a fork divergence, reducing the chance of repeated conflicts
+in later upstream merges. No production executor behavior was changed by this
+resolution.
 
 Regression tests cover clean discovery output, upstream safe-mode decisions,
 runtime-key isolation, unchanged configured keys, repeated reloads without
-provider duplication, and preservation of upstream discovery initialization.
+provider duplication, preservation of upstream discovery initialization, and
+the Codex bootstrap timeout ordering cases.
 
-The upstream-only PR retargeting and AGENTS modification policies are scoped to
-`router-for-me/CLIProxyAPI`. They must not redirect or close normal fork sync PRs.
-The fork's own validation workflow has read-only repository permissions.
+Upstream-only contribution policies (AGENTS changes, translator-path restrictions,
+and automatic main-to-dev retargeting) are scoped to `router-for-me/CLIProxyAPI`.
+They must not redirect or close normal fork synchronization PRs. The fork's own
+validation workflow has read-only repository permissions.
 
 ## Bootstrap test stability
 
-The initial full Go run exposed an intermittent failure in the upstream
-`TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeoutDeliveredInStream`.
-The mock server could advance time before the executor captured its bootstrap
-start. Related HTTP fixtures also signaled before reading the starting clock.
-A shared test-only handshake now captures the start before allowing the server
-to advance time. Production executor behavior and test assertions are unchanged.
-The five affected timeout tests passed 100 repetitions each during integration;
-the persistent CI repeats them 20 times in addition to the full suite.
+The 2026-09-20 integration exposed a scheduler-dependent mock-clock ordering
+failure in Codex bootstrap timeout tests. A fork-only captured-start handshake
+was initially added to make the fixtures deterministic. Upstream subsequently
+implemented the same ordering guarantee before the 2026-09-21 sync, so the fork
+now follows upstream's test implementation directly instead of maintaining a
+parallel patch. The persistent CI still repeats the affected timeout tests 20
+times in addition to the complete Go suite.
 
 ## Next synchronization
 
@@ -113,7 +126,8 @@ cannot guarantee that future semantic conflicts will disappear.
 After success, review the branch diff, push the named sync branch, and open a PR
 to the fork's `main`. Merge using **Create a merge commit**. The read-only
 `Pinable upstream check` workflow validates the actual PR merge result, builds
-the server, runs the Go suite, checks the script, and probes version/discovery.
+the server, runs the Go suite, checks the sync script, repeats timeout ordering
+regressions, and probes both discovery CLI forms.
 
 ## Script regression tests
 

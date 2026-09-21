@@ -26,8 +26,8 @@ jobs:
           persist-credentials: false
       - name: Verify synchronization baseline ancestry
         run: |
-          git merge-base --is-ancestor 491e5413d084f74614f10834d63b76d288fb3e56 HEAD
-          git merge-base --is-ancestor 61fdfc341b96178a8dcb53f2efc46cbc341d267c HEAD
+          git merge-base --is-ancestor 390fab7820295761d3e0991dfc1fdf8121dc9927 HEAD
+          git merge-base --is-ancestor a5ab69521f7b4e0f244836d0419da8fcd89408ea HEAD
       - name: Test safe synchronization script
         run: |
           bash -n scripts/pinable/sync-upstream.sh

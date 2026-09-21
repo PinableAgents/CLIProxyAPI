@@ -25,7 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify fork baseline and sync tooling
+      - name: Verify fork baseline, target, and sync tooling
         shell: bash
         env:
           EXPECTED_BASE: 390fab7820295761d3e0991dfc1fdf8121dc9927
@@ -43,12 +43,12 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_UPSTREAM"
           bash -n scripts/pinable/sync-upstream.sh
           python3 scripts/pinable/test_sync_upstream.py -v
-      - name: Execute repository synchronization script
+      - name: Merge pinned upstream target
         id: integrate
         shell: bash
         run: |
           set +e
-          bash scripts/pinable/sync-upstream.sh main
+          git merge --no-ff --no-commit a5ab69521f7b4e0f244836d0419da8fcd89408ea
           rc=$?
           set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -68,32 +68,31 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.integrate.outputs.rc != '0'
         with:
-          name: cliproxy-sync-conflicts-20260921
+          name: cliproxy-sync-conflicts-20260921-v2
           path: ${{ runner.temp }}/conflict
           retention-days: 3
       - name: Require reviewed conflict resolution
         if: steps.integrate.outputs.rc != '0'
         run: exit 1
-      - name: Verify merged upstream ancestry
-        if: steps.integrate.outputs.rc == '0'
-        run: |
-          git merge-base --is-ancestor a5ab69521f7b4e0f244836d0419da8fcd89408ea HEAD
-          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3
-      - name: Repeat bootstrap timeout regressions
-        if: steps.integrate.outputs.rc == '0'
-        run: go test ./internal/runtime/executor -run 'TestCodex(Websockets)?Executor_BootstrapBuffering_(TimeBudgetReleasesStream|OverloadDirectlyAfterTimeoutDeliveredInStream|StatusBearingErrorAfterTimeoutDeliveredInStream)$' -count=20
-      - name: Probe CLI contract
+      - name: Validate clean merge result
         if: steps.integrate.outputs.rc == '0'
         shell: bash
         run: |
           set -euo pipefail
+          test -z "$(git ls-files -u)"
+          git diff --cached --check
           go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
+          go test ./...
+          go test ./internal/runtime/executor -run 'TestCodex(Websockets)?Executor_BootstrapBuffering_(TimeBudgetReleasesStream|OverloadDirectlyAfterTimeoutDeliveredInStream|StatusBearingErrorAfterTimeoutDeliveredInStream)$' -count=20
           "$RUNNER_TEMP/cli-proxy-api" --version
           "$RUNNER_TEMP/cli-proxy-api" discover --json --timeout 1 | python3 -m json.tool >/dev/null
           "$RUNNER_TEMP/cli-proxy-api" --discover-json --discover-timeout 1 | python3 -m json.tool >/dev/null
-      - name: Publish verified merge branch
+      - name: Commit and publish verified merge
         if: steps.integrate.outputs.rc == '0'
         shell: bash
         run: |
           set -euo pipefail
+          git commit -m 'Merge upstream a5ab69521f7b with Pinable host integration preserved'
+          git merge-base --is-ancestor a5ab69521f7b4e0f244836d0419da8fcd89408ea HEAD
+          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3
           git push origin HEAD:refs/heads/sync/upstream-20260921-a5ab69521f7b

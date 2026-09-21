@@ -678,6 +678,7 @@ func TestCodexExecutor_BootstrapBuffering_ByteCapReleasesStream(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected a stream result once the byte cap released the stream")
 	}
+	drainChunks(result)
 }
 
 // Upstream interleaves keepalive heartbeats and item announcements while the model is still
@@ -1347,22 +1348,6 @@ func withMockClock(t *testing.T, initial time.Time) *mockClock {
 	return m
 }
 
-// withBootstrapClockHandshake prevents a test server from advancing the mock
-// clock before the executor captures the start of its bootstrap window.
-func withBootstrapClockHandshake(t *testing.T, initial time.Time) (*mockClock, <-chan struct{}) {
-	clock := &mockClock{cur: initial}
-	started := make(chan struct{})
-	var once sync.Once
-	cleanup := setCodexBootstrapNowForTest(func() time.Time {
-		// Capture first: waking the server before this read races with advance.
-		now := clock.now()
-		once.Do(func() { close(started) })
-		return now
-	})
-	t.Cleanup(cleanup)
-	return clock, started
-}
-
 func TestCodexConfig_StreamBootstrapTimeoutDuration(t *testing.T) {
 	tests := []struct {
 		raw      string
@@ -1407,7 +1392,18 @@ func TestCodexConfig_StreamBootstrapTimeoutDuration(t *testing.T) {
 // so downstream headers are committed and in-stream delivery takes over rather than long hangs.
 func TestCodexExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T) {
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-	clock, bootstrapStarted := withBootstrapClockHandshake(t, t0)
+	clock := withMockClock(t, t0)
+
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1446,7 +1442,18 @@ func TestCodexExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T)
 
 func TestCodexWebsocketsExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T) {
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-	clock, bootstrapStarted := withBootstrapClockHandshake(t, t0)
+	clock := withMockClock(t, t0)
+
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1460,8 +1467,8 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *
 		}
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
 
-		// Advance clock past default 10s timeout
 		<-bootstrapStarted
+		// Advance clock past default 10s timeout
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
@@ -1598,7 +1605,18 @@ func TestCodexExecutor_BootstrapBuffering_DefaultUnsetTimeoutIsUnlimited(t *test
 // in-stream rather than triggering credential failover.
 func TestCodexExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredInStream(t *testing.T) {
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-	clock, bootstrapStarted := withBootstrapClockHandshake(t, t0)
+	clock := withMockClock(t, t0)
+
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1633,7 +1651,18 @@ func TestCodexExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredI
 
 func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredInStream(t *testing.T) {
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-	clock, bootstrapStarted := withBootstrapClockHandshake(t, t0)
+	clock := withMockClock(t, t0)
+
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1646,8 +1675,8 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeout
 			return
 		}
 
-		// Advance clock past 10s timeout before writing any messages
 		<-bootstrapStarted
+		// Advance clock past 10s timeout before writing any messages
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexOverloadEvent))
@@ -1671,7 +1700,18 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeout
 // delivered in-stream rather than failing over.
 func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeoutDeliveredInStream(t *testing.T) {
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-	clock, bootstrapStarted := withBootstrapClockHandshake(t, t0)
+	clock := withMockClock(t, t0)
+
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
 
 	statusBearingError := `{"type":"error","status":429,"error":{"message":"Rate limit exceeded","type":"requests","code":"rate_limit_exceeded"}}`
 
@@ -1686,8 +1726,8 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 			return
 		}
 
-		// Advance clock past 10s timeout before writing error frame
 		<-bootstrapStarted
+		// Advance clock past 10s timeout before writing error frame
 		clock.advance(11 * time.Second)
 
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(statusBearingError))

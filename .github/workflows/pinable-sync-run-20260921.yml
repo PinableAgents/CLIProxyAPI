@@ -1,0 +1,99 @@
+name: Pinable sync run 20260921
+
+on:
+  push:
+    branches: [sync/upstream-20260921-a5ab69521f7b]
+    paths: [.github/workflows/pinable-sync-run-20260921.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pinable-sync-run-20260921
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'PinableAgents/CLIProxyAPI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify fork baseline and sync tooling
+        shell: bash
+        env:
+          EXPECTED_BASE: 390fab7820295761d3e0991dfc1fdf8121dc9927
+          EXPECTED_UPSTREAM: a5ab69521f7b4e0f244836d0419da8fcd89408ea
+        run: |
+          set -euo pipefail
+          git config user.name 'Pinable sync'
+          git config user.email 'noreply@pinable.cc'
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          test "$(git rev-parse origin/main)" = "$EXPECTED_BASE"
+          git merge-base --is-ancestor "$EXPECTED_BASE" HEAD
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
+          git fetch --no-tags upstream main
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_UPSTREAM"
+          bash -n scripts/pinable/sync-upstream.sh
+          python3 scripts/pinable/test_sync_upstream.py -v
+      - name: Execute repository synchronization script
+        id: integrate
+        shell: bash
+        run: |
+          set +e
+          bash scripts/pinable/sync-upstream.sh main
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ]; then
+            mkdir -p "$RUNNER_TEMP/conflict"
+            git status --short > "$RUNNER_TEMP/conflict/status.txt"
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflict/files.txt"
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              safe=$(printf '%s' "$path" | tr '/' '_')
+              git show ":1:$path" > "$RUNNER_TEMP/conflict/${safe}.base" 2>/dev/null || true
+              git show ":2:$path" > "$RUNNER_TEMP/conflict/${safe}.ours" 2>/dev/null || true
+              git show ":3:$path" > "$RUNNER_TEMP/conflict/${safe}.theirs" 2>/dev/null || true
+            done < "$RUNNER_TEMP/conflict/files.txt"
+            git diff --cc > "$RUNNER_TEMP/conflict/combined.diff" || true
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.integrate.outputs.rc != '0'
+        with:
+          name: cliproxy-sync-conflicts-20260921
+          path: ${{ runner.temp }}/conflict
+          retention-days: 3
+      - name: Require reviewed conflict resolution
+        if: steps.integrate.outputs.rc != '0'
+        run: exit 1
+      - name: Verify merged upstream ancestry
+        if: steps.integrate.outputs.rc == '0'
+        run: |
+          git merge-base --is-ancestor a5ab69521f7b4e0f244836d0419da8fcd89408ea HEAD
+          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3
+      - name: Repeat bootstrap timeout regressions
+        if: steps.integrate.outputs.rc == '0'
+        run: go test ./internal/runtime/executor -run 'TestCodex(Websockets)?Executor_BootstrapBuffering_(TimeBudgetReleasesStream|OverloadDirectlyAfterTimeoutDeliveredInStream|StatusBearingErrorAfterTimeoutDeliveredInStream)$' -count=20
+      - name: Probe CLI contract
+        if: steps.integrate.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
+          "$RUNNER_TEMP/cli-proxy-api" --version
+          "$RUNNER_TEMP/cli-proxy-api" discover --json --timeout 1 | python3 -m json.tool >/dev/null
+          "$RUNNER_TEMP/cli-proxy-api" --discover-json --discover-timeout 1 | python3 -m json.tool >/dev/null
+      - name: Publish verified merge branch
+        if: steps.integrate.outputs.rc == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/sync/upstream-20260921-a5ab69521f7b

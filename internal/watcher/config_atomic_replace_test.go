@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"gopkg.in/yaml.v3"
 )
 
 // Exercise real filesystem notifications rather than manually invoking reload.
@@ -23,20 +23,20 @@ func TestRuntimeConfigReloadSurvivesRepeatedAtomicReplacement(t *testing.T) {
 		t.Fatal(errMkdir)
 	}
 	configPath := filepath.Join(root, "config.yaml")
-	cfg := &config.Config{AuthDir: authDir, Port: 8317}
 	writeConfig := func(path string, port int) []byte {
 		t.Helper()
-		cfg.Port = port
-		data, errMarshal := yaml.Marshal(cfg)
-		if errMarshal != nil {
-			t.Fatal(errMarshal)
-		}
+		// Omitted options use the real loader defaults instead of marshaled zero values.
+		data := []byte(fmt.Sprintf("auth-dir: %q\nport: %d\n", authDir, port))
 		if errWrite := os.WriteFile(path, data, 0o600); errWrite != nil {
 			t.Fatal(errWrite)
 		}
 		return data
 	}
 	writeConfig(configPath, 8317)
+	initial, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatal(errLoad)
+	}
 	w, errNew := NewWatcher(configPath, authDir, nil)
 	if errNew != nil {
 		t.Fatal(errNew)
@@ -44,8 +44,7 @@ func TestRuntimeConfigReloadSurvivesRepeatedAtomicReplacement(t *testing.T) {
 	// These tests exercise local files, not an optional process-wide token store.
 	w.storePersister = nil
 	w.mirroredAuthDir = ""
-	initial := *cfg
-	w.SetConfig(&initial)
+	w.SetConfig(initial)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()

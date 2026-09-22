@@ -49,7 +49,8 @@ def metadata(target):
             "build": {"go_version": "go1.26.0", "cgo_enabled": False,
                       "trimpath": True, "buildvcs": False,
                       "signing": "ad-hoc" if target.startswith("darwin/") else "unsigned"},
-            "capabilities": {"dynamic_library_plugins": False, "parent_monitor": True,
+            "capabilities": {"dynamic_library_plugins": target.startswith("windows/"),
+                             "dynamic_library_plugins_tested": False, "parent_monitor": True,
                              "runtime_control": True, "ephemeral_api_key": True}}
 
 
@@ -113,6 +114,13 @@ class RuntimeTests(unittest.TestCase):
             second = json.loads(self.bundle(target).read_text())
             self.assertEqual(first, second)
 
+    def test_license_line_endings_are_canonical(self):
+        self.license.write_bytes(b"MIT license fixture\r\n")
+        first = json.loads(self.bundle().read_text())
+        self.license.write_bytes(b"MIT license fixture\n")
+        second = json.loads(self.bundle().read_text())
+        self.assertEqual(first, second)
+
     def test_output_not_overwritten(self):
         path = self.bundle()
         original = path.read_bytes()
@@ -168,7 +176,8 @@ class RuntimeTests(unittest.TestCase):
             with zipfile.ZipFile(path, "w") as archive:
                 for entry_name in ("cli-proxy-api.exe", "LICENSE", name):
                     entry = zipfile.ZipInfo(entry_name)
-                    entry.external_attr = (mode if entry_name == name else 0o100755) << 16
+                    safe_mode = 0o100755 if entry_name == "cli-proxy-api.exe" else 0o100644
+                    entry.external_attr = (mode if entry_name == name else safe_mode) << 16
                     archive.writestr(entry, "fake")
             with self.assertRaises(ValueError):
                 runtime.read_archive(path, "cli-proxy-api.exe")

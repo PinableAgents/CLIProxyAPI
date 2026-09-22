@@ -147,7 +147,8 @@ def validate_manifest(manifest: dict) -> str:
             build["buildvcs"] is False, "runtime does not use the pinned portable build profile")
     require(build["signing"] == ("ad-hoc" if system == "darwin" else "unsigned"),
             "unexpected signing policy")
-    require(manifest["capabilities"] == {"dynamic_library_plugins": False,
+    require(manifest["capabilities"] == {"dynamic_library_plugins": system == "windows",
+            "dynamic_library_plugins_tested": False,
             "parent_monitor": True, "runtime_control": True, "ephemeral_api_key": True},
             "unexpected runtime capabilities")
     for field, name, limit in (("binary", binary_name(target), MAX_BINARY),
@@ -251,7 +252,8 @@ def package(binary: Path, license_path: Path, output: Path, metadata: dict) -> P
     data = binary.read_bytes()
     validate_binary(data, metadata["target"])
     manifest = copy.deepcopy(metadata)
-    license_data = license_path.read_bytes()
+    # Normalize Git's Windows checkout line endings to the canonical license text.
+    license_data = license_path.read_bytes().replace(b"\r\n", b"\n")
     require(0 < len(license_data) <= MAX_METADATA, "missing/oversized license")
     manifest["binary"] = file_record(binary_name(manifest["target"]), data)
     manifest["license"] = file_record("LICENSE", license_data)
@@ -297,7 +299,8 @@ def build(root: Path, output: Path, target: str, version: str) -> Path:
                 "source": {"repository": REPOSITORY, "commit": commit, "commit_time": commit_time},
                 "build": {"go_version": go_version, "cgo_enabled": False, "trimpath": True,
                           "buildvcs": False, "signing": "ad-hoc" if system == "darwin" else "unsigned"},
-                "capabilities": {"dynamic_library_plugins": False, "parent_monitor": True,
+                "capabilities": {"dynamic_library_plugins": system == "windows",
+                                 "dynamic_library_plugins_tested": False, "parent_monitor": True,
                                  "runtime_control": True, "ephemeral_api_key": True}}
     with tempfile.TemporaryDirectory(prefix="pinable-runtime-build-") as work:
         binary = Path(work) / binary_name(target)

@@ -71,8 +71,9 @@ def publish(directory, expected_commit):
              "All six platform executables passed native host-contract smoke checks. "
              "Normal Go regression tests passed before publication.\n\n"
              "Use runtime-index.json and SHA256SUMS to approve exact binary hashes in Desktop's "
-             "component lock. No lock is changed automatically. Dynamic library plugins are disabled "
-             "(CGO=0). macOS binaries are ad-hoc signed, not Developer ID signed/notarized; Windows "
+             "component lock. No lock is changed automatically. CGO=0 disables the Unix "
+             "dynamic-library loader; Windows retains its DLL loader. Plugin execution is not certified "
+             "by this pipeline. macOS binaries are ad-hoc signed, not Developer ID signed/notarized; Windows "
              "binaries are unsigned. This is not a Desktop application installer.")
     release = api(f"repos/{repo}/releases", {"tag_name": tag, "target_commitish": expected_commit,
                   "name": "Pinable runtime " + index["version"], "body": notes,

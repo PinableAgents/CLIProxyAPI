@@ -9,9 +9,11 @@ on:
       - '.github/workflows/pinable-runtime.yml'
       - 'scripts/pinable/runtime.py'
       - 'scripts/pinable/test_runtime.py'
+      - 'scripts/pinable/test_publish_runtime.py'
       - 'scripts/pinable/smoke_runtime.py'
       - 'scripts/pinable/publish_runtime.py'
       - 'docs/pinable/desktop-runtime.md'
+      - 'internal/watcher/**'
   workflow_dispatch:
     inputs:
       version:
@@ -52,7 +54,7 @@ jobs:
           cache: true
       - name: Distribution and synchronization tool regressions
         run: |
-          python scripts/pinable/test_runtime.py -v
+          python -m unittest discover -s scripts/pinable -p 'test_*runtime.py' -v
           python scripts/pinable/test_sync_upstream.py -v
           bash -n scripts/pinable/sync-upstream.sh
       - name: Full application suite (normal CGO profile)
@@ -103,8 +105,8 @@ jobs:
       - name: Test host integration on the native architecture
         shell: bash
         run: |
-          python scripts/pinable/test_runtime.py -v
-          go test ./cmd/server ./internal/cmd ./internal/api ./internal/api/handlers/management ./sdk/access ./sdk/cliproxy -run 'Test.*(Host|Runtime|Ephemeral|Parent|Version|SafeMode)' -count=1
+          python -m unittest discover -s scripts/pinable -p 'test_*runtime.py' -v
+          go test ./cmd/server ./internal/cmd ./internal/api ./internal/api/handlers/management ./sdk/access ./sdk/cliproxy ./internal/watcher -run 'Test.*(Host|Runtime|Ephemeral|Parent|Version|SafeMode)' -count=1
       - name: Build pinned portable runtime (no catalog refresh)
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/pinable-runtime-${{ matrix.id }}

@@ -1,0 +1,93 @@
+name: Integrate upstream v8 20260930
+
+on:
+  push:
+    branches: [maintenance/sync-20260930-a270e7b9]
+    paths:
+      - .github/workflows/pinable-sync-20260930-integrate.yml
+      - .github/pinable-v8-resolution.patch.gz.b64
+
+permissions:
+  contents: read
+
+jobs:
+  integrate:
+    if: github.repository == 'PinableAgents/CLIProxyAPI'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      FORK_SHA: 2eb057869ca11301edf1768e6ff68d8f95521e10
+      UPSTREAM_SHA: a270e7b9e57aaecd8f82555f44c2108518ad2330
+      EXPECTED_TREE: f116a04e93b0edda6d180555c9bd8ed3065da511
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          ref: 2eb057869ca11301edf1768e6ff68d8f95521e10
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
+      - name: Decode the independently reviewed resolution
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, os
+          from pathlib import Path
+          encoded = Path('driver/.github/pinable-v8-resolution.patch.gz.b64').read_text().strip()
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '41abff5f3612ab9d0acc6c8958f192e742713e303e924134f6efff754bf86d4a'
+          Path(os.environ['RUNNER_TEMP'], 'resolution.patch').write_bytes(patch)
+          PY
+      - name: Use the maintained merge and validation tool
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Pinable upstream sync'
+          git config user.email 'noreply@pinable.cc'
+          git switch -c sync/v8-source
+          if bash scripts/pinable/sync-upstream.sh "$UPSTREAM_SHA"; then
+            echo 'Expected reviewed import conflicts; refusing a different merge.' >&2
+            exit 1
+          fi
+          test "$(git rev-parse MERGE_HEAD)" = "$UPSTREAM_SHA"
+          printf '%s\n' internal/access/config_access/provider.go internal/api/server_options.go internal/api/server_reload.go internal/cmd/run.go > "$RUNNER_TEMP/expected-conflicts"
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/actual-conflicts"
+          diff -u "$RUNNER_TEMP/expected-conflicts" "$RUNNER_TEMP/actual-conflicts"
+          git apply --check "$RUNNER_TEMP/resolution.patch"
+          git apply "$RUNNER_TEMP/resolution.patch"
+          git add -u
+          test -z "$(git ls-files -u)"
+          git diff --cached --check
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          python3 -m unittest discover -s scripts/pinable -p 'test_*runtime.py' -v
+          python3 scripts/pinable/test_sync_upstream.py -v
+          bash -n scripts/pinable/sync-upstream.sh
+          bash scripts/pinable/sync-upstream.sh --continue
+          test "$(git show -s --format=%P HEAD)" = "$FORK_SHA $UPSTREAM_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+      - name: Publish only the verified review branch
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/PinableAgents/CLIProxyAPI/git/ref/heads/main --jq .object.sha)" = "$FORK_SHA"
+          test "$(gh api repos/router-for-me/CLIProxyAPI/git/ref/heads/main --jq .object.sha)" = "$UPSTREAM_SHA"
+          branch=sync/upstream-20260930-a270e7b9e57a
+          if git ls-remote --exit-code --heads origin "$branch"; then
+            echo 'Review branch already exists; inspect instead of overwriting.' >&2
+            exit 1
+          fi
+          git -c credential.helper='!gh auth git-credential' push https://github.com/PinableAgents/CLIProxyAPI.git "HEAD:refs/heads/$branch"
+          printf 'Prepared `%s` on `%s`. Full PR and six-platform runtime checks remain required before merging main.\n' "$(git rev-parse HEAD)" "$branch" >> "$GITHUB_STEP_SUMMARY"

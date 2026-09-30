@@ -1,0 +1,53 @@
+name: Inspect upstream v8 merge 20260930
+
+on:
+  push:
+    branches: [maintenance/sync-20260930-a270e7b9]
+    paths: [.github/workflows/pinable-sync-20260930-review.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.repository == 'PinableAgents/CLIProxyAPI'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 2eb057869ca11301edf1768e6ff68d8f95521e10
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reproduce the pinned three-way merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Pinable upstream review'
+          git config user.email 'noreply@pinable.cc'
+          git switch -c sync/upstream-20260930-a270e7b9
+          git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
+          git fetch --no-tags upstream a270e7b9e57aaecd8f82555f44c2108518ad2330
+          git merge-base --is-ancestor a5ab69521f7b4e0f244836d0419da8fcd89408ea FETCH_HEAD
+          git config rerere.enabled true
+          git config rerere.autoupdate false
+          if ! git merge --no-ff --no-commit a270e7b9e57aaecd8f82555f44c2108518ad2330; then
+            test -n "$(git ls-files -u)"
+          fi
+          git diff --name-only --diff-filter=U | tee "$RUNNER_TEMP/conflicts.txt"
+          git status --short > "$RUNNER_TEMP/status.txt"
+          git diff --stat > "$RUNNER_TEMP/diff-stat.txt"
+          if git config --local --get-regexp 'extraheader|includeif'; then
+            echo 'Refusing to archive credential-related config' >&2
+            exit 1
+          fi
+          tar -czf "$RUNNER_TEMP/cliproxy-v8-review.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cliproxy-v8-review
+          path: |
+            ${{ runner.temp }}/cliproxy-v8-review.tar.gz
+            ${{ runner.temp }}/conflicts.txt
+            ${{ runner.temp }}/status.txt
+            ${{ runner.temp }}/diff-stat.txt
+          retention-days: 3

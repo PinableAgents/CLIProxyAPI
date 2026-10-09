@@ -1,0 +1,56 @@
+name: Inspect upstream merge 20261009
+
+on:
+  push:
+    branches: [maintenance/sync-20261009-67465884]
+    paths: [.github/workflows/pinable-sync-20261009-review.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.repository == 'PinableAgents/CLIProxyAPI'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      FORK_SHA: fa10525c30391ebade420d23302425eecc9678c1
+      UPSTREAM_SHA: 67465884ca179a8f9098328d03a361b50003fdd7
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fa10525c30391ebade420d23302425eecc9678c1
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Inspect real merge using the maintained sync tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FORK_SHA"
+          git config user.name 'Pinable upstream sync'
+          git config user.email 'noreply@pinable.cc'
+          git switch -c review/pinned-source
+          mkdir -p "$RUNNER_TEMP/review"
+          status=0
+          bash scripts/pinable/sync-upstream.sh "$UPSTREAM_SHA" > "$RUNNER_TEMP/review/sync.log" 2>&1 || status=$?
+          printf '%s\n' "$status" > "$RUNNER_TEMP/review/sync-exit-code.txt"
+          git merge-base "$FORK_SHA" "$UPSTREAM_SHA" > "$RUNNER_TEMP/review/merge-base.txt"
+          git rev-list --count "$FORK_SHA..$UPSTREAM_SHA" > "$RUNNER_TEMP/review/upstream-count.txt"
+          git status --short > "$RUNNER_TEMP/review/status.txt"
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/review/conflicts.txt"
+          git rev-parse HEAD > "$RUNNER_TEMP/review/head.txt"
+          cat "$RUNNER_TEMP/review/conflicts.txt"
+          tail -50 "$RUNNER_TEMP/review/sync.log"
+          tar -czf "$RUNNER_TEMP/review/source-with-history.tar.gz" .
+          printf 'Inspection only; sync tool exit code: %s. No branch pushed or main changed.\n' "$status" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cliproxy-sync-20261009-review
+          path: ${{ runner.temp }}/review/
+          retention-days: 3
+          compression-level: 0

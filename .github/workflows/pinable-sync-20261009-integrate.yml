@@ -1,0 +1,90 @@
+name: Prepare reviewed upstream sync 20261009
+
+on:
+  push:
+    branches: [maintenance/sync-20261009-67465884]
+    paths:
+      - .github/workflows/pinable-sync-20261009-integrate.yml
+
+permissions:
+  contents: read
+
+jobs:
+  integrate:
+    if: github.repository == 'PinableAgents/CLIProxyAPI' && github.ref == 'refs/heads/maintenance/sync-20261009-67465884'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      FORK_SHA: fa10525c30391ebade420d23302425eecc9678c1
+      UPSTREAM_SHA: 67465884ca179a8f9098328d03a361b50003fdd7
+      EXPECTED_TREE: ad725aa451f759566cdcb52af2ebfd1b9e223250
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          ref: fa10525c30391ebade420d23302425eecc9678c1
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
+          cache: true
+      - name: Reproduce and verify the reviewed three-way resolution
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Pinable upstream sync'
+          git config user.email 'noreply@pinable.cc'
+          test "$(git rev-parse HEAD)" = "$FORK_SHA"
+          git switch -c review/pinned-source
+          if bash scripts/pinable/sync-upstream.sh "$UPSTREAM_SHA"; then
+            echo 'Expected one reviewed conflict; refusing a different merge.' >&2
+            exit 1
+          fi
+          test "$(git rev-parse MERGE_HEAD)" = "$UPSTREAM_SHA"
+          test "$(git diff --name-only --diff-filter=U)" = cmd/server/main.go
+          printf '%s  %s\n' a09290c24ce50f4db2409fd058cb1891da9b60531dd275f00c550d17bac80439 ../driver/.github/pinable-sync-20261009.patch | sha256sum --check
+          git apply --check ../driver/.github/pinable-sync-20261009.patch
+          git apply ../driver/.github/pinable-sync-20261009.patch
+          git add -u
+          test -z "$(git ls-files -u)"
+          git diff --cached --check
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          test -z "$(git diff --cached --name-only "$FORK_SHA" -- .github/workflows)"
+      - name: Validate and finish using the maintained sync tool
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/pinable/sync-upstream.sh
+          python3 scripts/pinable/test_sync_upstream.py -v
+          python3 -m unittest discover -s scripts/pinable -p 'test_*runtime.py' -v
+          python3 scripts/pinable/test_monolith.py -v
+          bash scripts/pinable/sync-upstream.sh --continue
+          test "$(git show -s --format=%P HEAD)" = "$FORK_SHA $UPSTREAM_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+      - name: Push only the verified candidate branch, never main
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/PinableAgents/CLIProxyAPI/git/ref/heads/main --jq .object.sha)" = "$FORK_SHA"
+          test "$(gh api repos/router-for-me/CLIProxyAPI/git/ref/heads/main --jq .object.sha)" = "$UPSTREAM_SHA"
+          branch=sync/upstream-20261009-67465884ca17
+          if git ls-remote --exit-code --heads origin "$branch"; then
+            echo 'Candidate branch already exists; inspect instead of overwriting.' >&2
+            exit 1
+          fi
+          git -c credential.helper='!gh auth git-credential' push https://github.com/PinableAgents/CLIProxyAPI.git "HEAD:refs/heads/$branch"
+          printf 'Prepared `%s` on `%s`. Main is unchanged. PR regression, native runtimes and monolith CI must pass before merge.\n' "$(git rev-parse HEAD)" "$branch" >> "$GITHUB_STEP_SUMMARY"

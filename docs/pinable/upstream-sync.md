@@ -1,3 +1,30 @@
+# 2026-11-14 synchronization target
+
+This synchronization integrates upstream stable `v8.0.70`
+(`905e70c48b47b7a1cb4a27dd3abc901e2cdd1e4a`) into fork main
+`f4d741cb55474c7ac47646e9139c24bb1be457b3`: 108 upstream commits while
+preserving all 53 fork-only commits and both merge parents. The Go module
+remains `/v8`; the Desktop host contract remains `1`.
+
+Conflict resolution combines upstream's explicit startup exit statuses and
+plugin interceptor host with Pinable's version-only entrypoint, ephemeral keys,
+parent supervision and runtime control. Atomic config replacement watches remain
+alongside upstream's synchronized auth-directory switching. Where upstream now
+provides equivalent websocket/interrupt test synchronization, use its guarded
+implementations without duplicating test helpers.
+
+The packaged runtime smoke now also checks authenticated
+`GET /v8/management/config` returns a JSON object and rejects unauthenticated or
+public-API credentials. Existing v8 config migration, v0 host control, native
+discovery, ephemeral key isolation and shutdown checks remain enabled. This
+verifies the management center's backend endpoint, not the user's installed
+Desktop process or cached management HTML.
+
+The immutable runtime version remains source timestamp plus commit SHA, generated
+by the existing main workflow. Merge with a merge commit, never squash/rebase.
+Stable runtime publication still requires all six native platform packages and
+quality checks. No Desktop installation or deployment is changed by this sync.
+
 # 2026-11-08 synchronization target
 
 This synchronization integrates upstream `router-for-me/CLIProxyAPI` at

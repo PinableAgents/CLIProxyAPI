@@ -20,6 +20,11 @@ discovery, ephemeral key isolation and shutdown checks remain enabled. This
 verifies the management center's backend endpoint, not the user's installed
 Desktop process or cached management HTML.
 
+The provider session-registration test now uses cancellation-aware in-process
+fakes for every built-in provider. This prevents asynchronous device polling
+from escaping a restored global HTTP transport and contacting live OAuth
+endpoints; production authentication is unchanged.
+
 The immutable runtime version remains source timestamp plus commit SHA, generated
 by the existing main workflow. Merge with a merge commit, never squash/rebase.
 Stable runtime publication still requires all six native platform packages and

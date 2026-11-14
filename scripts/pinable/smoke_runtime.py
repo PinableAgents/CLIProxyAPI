@@ -154,6 +154,19 @@ def smoke(artifact_dir: Path, allow_unavailable_multicast=False):
                                     and info.get("component_version") == manifest["version"]
                                     and info.get("build_time") == manifest["source"]["commit_time"],
                                     "host contract metadata mismatch")
+                    code, config_body = request(port, "/v8/management/config", management_key)
+                    runtime.require(code == 200 and isinstance(json.loads(config_body), dict),
+                                    "v8 management center config endpoint unavailable")
+                    for unauthorized_key in ("", ephemeral_key):
+                        runtime.require(request(port, "/v8/management/config", unauthorized_key)[0] in (401, 403),
+                                        "v8 config management authentication was bypassed")
+                    # A successful management request resets the failed-attempt
+                    # counter between independent negative-authentication groups.
+                    # Otherwise this group plus the existing host-control checks
+                    # legitimately reaches the five-failure IP ban threshold.
+                    runtime.require(request(port, "/v8/management/config", management_key)[0] == 200,
+                                    "valid v8 management key rejected after negative auth checks")
+                    checks.append("authenticated v8 management center config endpoint returns JSON")
                     for key in ("", ephemeral_key):
                         runtime.require(request(port, "/v0/management/runtime-info", key)[0] in (401, 403),
                                         "management authentication was bypassed")

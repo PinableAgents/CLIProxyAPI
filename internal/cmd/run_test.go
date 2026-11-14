@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,4 +102,16 @@ func waitForBackgroundServer(t *testing.T, client *http.Client, url, key string)
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("background service did not become ready")
+}
+
+func TestStartServiceReturnsBuildError(t *testing.T) {
+	if errStart := StartService(nil, "", ""); errStart == nil || !strings.Contains(errStart.Error(), "configuration is required") {
+		t.Fatalf("expected missing configuration error, got %v", errStart)
+	}
+}
+
+func TestStartServiceWithPluginHostReturnsBuildError(t *testing.T) {
+	if errStart := StartServiceWithPluginHost(nil, "", "", nil, HostOptions{}); errStart == nil || !strings.Contains(errStart.Error(), "configuration is required") {
+		t.Fatalf("expected missing configuration error, got %v", errStart)
+	}
 }

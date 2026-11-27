@@ -2,10 +2,12 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -259,8 +261,19 @@ func TestConfigWatchSharedDirMixedRelativeAndAbsolutePaths(t *testing.T) {
 		t.Fatalf("expected updated label v2@example.com, got %+v", updated.Auth)
 	}
 
-	if errRemove := os.Remove(credPath); errRemove != nil {
-		t.Fatalf("failed to remove auth file: %v", errRemove)
+	// Windows can briefly deny removal while the watcher reads the same auth
+	// file for a second fsnotify event. Retry only that OS sharing violation.
+	const windowsSharingViolation = syscall.Errno(32)
+	deadline := time.Now().Add(time.Second)
+	for {
+		errRemove := os.Remove(credPath)
+		if errRemove == nil {
+			break
+		}
+		if runtime.GOOS != "windows" || !errors.Is(errRemove, windowsSharingViolation) || !time.Now().Before(deadline) {
+			t.Fatalf("failed to remove auth file: %v", errRemove)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	waitForAuthUpdate(t, queue, AuthUpdateActionDelete, "mixed-cred.json", 3*time.Second)
 

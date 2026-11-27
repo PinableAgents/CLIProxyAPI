@@ -1,3 +1,10 @@
+# Pinable shared local files
+.codegraph/
+Thumbs.db
+[Dd]esktop.ini
+.env.local
+.env.*.local
+
 # Binaries
 cli-proxy-api
 *.exe

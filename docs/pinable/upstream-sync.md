@@ -1,3 +1,20 @@
+# 2026-11-27 synchronization target
+
+This synchronization integrates router-for-me/CLIProxyAPI main at
+`dbe641f286a489ecb39e3c041c554371e6add864` into Pinable fork main
+`59185297`. Both histories and the /v8 module are retained.
+
+- Adopt upstream's config-directory watch and file replacement handling instead
+  of retaining the duplicate Pinable startup watch. The watcher still supports
+  atomic replacement and subsequent reloads.
+- Keep Windows native DLL support without cgo and cgo support for macOS/Linux.
+  The upstream-only difference in the support header implementation is its
+  comment; Pinable's platform build constraints remain unchanged.
+- Keep the Desktop host APIs, runtime packaging and main-only release workflow.
+  Do not restore upstream workflows to the fork. Merge using a merge commit
+  so that the next synchronization sees the recorded upstream ancestry.
+
+
 # 2026-11-14 synchronization target
 
 This synchronization integrates upstream stable `v8.0.70`
